@@ -10,6 +10,7 @@ from sqlglot.errors import OptimizeError
 from sqlglot.helper import seq_get
 from sqlglot.optimizer.scope import Scope, traverse_scope, walk_in_scope
 from sqlglot.schema import Schema, ensure_schema
+from sqlglot.optimizer.aliases import get_table_aliases_in_query
 
 
 def qualify_columns(
@@ -17,7 +18,8 @@ def qualify_columns(
     schema: t.Dict | Schema,
     expand_alias_refs: bool = True,
     infer_schema: t.Optional[bool] = None,
-) -> exp.Expression:
+    return_unknown: bool = False,
+) -> t.Union[exp.Expression, t.Tuple[exp.Expression, t.List[t.Tuple[str, str, str]]]]:
     """
     Rewrite sqlglot AST to have fully qualified columns.
 
@@ -38,9 +40,11 @@ def qualify_columns(
         The qualified expression.
     """
     schema = ensure_schema(schema)
+    aliases = get_table_aliases_in_query(expression)
     infer_schema = schema.empty if infer_schema is None else infer_schema
     pseudocolumns = Dialect.get_or_raise(schema.dialect).PSEUDOCOLUMNS
 
+    unknown_columns = []
     for scope in traverse_scope(expression):
         resolver = Resolver(scope, schema, infer_schema=infer_schema)
         _pop_table_column_aliases(scope.ctes)
@@ -50,7 +54,9 @@ def qualify_columns(
         if schema.empty and expand_alias_refs:
             _expand_alias_refs(scope, resolver)
 
-        _qualify_columns(scope, resolver)
+        _result_qualify_columns = _qualify_columns(scope, resolver, aliases, return_unknown=return_unknown)
+        if return_unknown:
+            unknown_columns.extend(_result_qualify_columns)
 
         if not schema.empty and expand_alias_refs:
             _expand_alias_refs(scope, resolver)
@@ -61,24 +67,41 @@ def qualify_columns(
         _expand_group_by(scope)
         _expand_order_by(scope, resolver)
 
-    return expression
+    if return_unknown:
+        return expression, unknown_columns
+    else:
+        return expression
 
 
-def validate_qualify_columns(expression: E) -> E:
+def validate_qualify_columns(
+    expression: E,
+    return_unknown: bool = False
+) -> t.Union[E, t.Tuple[E, t.List[t.Tuple[str, str]]]]:
     """Raise an `OptimizeError` if any columns aren't qualified"""
     unqualified_columns = []
+    unknown = []
     for scope in traverse_scope(expression):
         if isinstance(scope.expression, exp.Select):
-            unqualified_columns.extend(scope.unqualified_columns)
+            if not return_unknown:
+                unqualified_columns.extend(scope.unqualified_columns)
+
             if scope.external_columns and not scope.is_correlated_subquery and not scope.pivots:
                 column = scope.external_columns[0]
-                raise OptimizeError(
-                    f"""Column '{column}' could not be resolved{f" for table: '{column.table}'" if column.table else ''}"""
-                )
+                unknown.append((column.table or '', str(column)))
+                if not return_unknown:
+                    raise OptimizeError(
+                      f"""Column '{column}' could not be resolved{f" for table: '{column.table}'" if column.table else ''}"""
+                    )
+            else:
+                unqualified_columns.extend(scope.unqualified_columns)
 
     if unqualified_columns:
-        raise OptimizeError(f"Ambiguous columns: {unqualified_columns}")
-    return expression
+        raise OptimizeError(f"Ambiguous columns: {set(unqualified_columns)}")
+
+    if not return_unknown:
+        return expression
+    else:
+        return expression, unknown
 
 
 def _pop_table_column_aliases(derived_tables: t.List[exp.CTE | exp.Subquery]) -> None:
@@ -277,8 +300,14 @@ def _select_by_pos(scope: Scope, node: exp.Literal) -> exp.Alias:
         raise OptimizeError(f"Unknown output column: {node.name}")
 
 
-def _qualify_columns(scope: Scope, resolver: Resolver) -> None:
+def _qualify_columns(
+    scope: Scope,
+    resolver: Resolver,
+    aliases,
+    return_unknown: bool = False
+) -> t.Optional[t.List[t.Tuple[str, str, str]]]:
     """Disambiguate columns, ensuring each column specifies a source"""
+    unknown = []
     for column in scope.columns:
         column_table = column.table
         column_name = column.name
@@ -286,7 +315,12 @@ def _qualify_columns(scope: Scope, resolver: Resolver) -> None:
         if column_table and column_table in scope.sources:
             source_columns = resolver.get_source_columns(column_table)
             if source_columns and column_name not in source_columns and "*" not in source_columns:
-                raise OptimizeError(f"Unknown column: {column_name}")
+                if not return_unknown:
+                    raise OptimizeError(f"Unknown column: {column_name}")
+                else:
+                    table = aliases.get(column_table, [column_table])[0]
+                    unknown.append((column_table, table, column_name))
+                    continue
 
         if not column_table:
             if scope.pivots and not column.find_ancestor(exp.Pivot):
@@ -324,6 +358,9 @@ def _qualify_columns(scope: Scope, resolver: Resolver) -> None:
                 column_table = resolver.get_table(column.name)
                 if column_table:
                     column.set("table", column_table)
+
+    if return_unknown:
+        return unknown
 
 
 def _expand_stars(

@@ -28,7 +28,8 @@ def qualify(
     validate_qualify_columns: bool = True,
     quote_identifiers: bool = True,
     identify: bool = True,
-) -> exp.Expression:
+    return_unknown: bool = False,
+) -> t.Union[exp.Expression, t.Tuple[exp.Expression, t.List, t.List]]:
     """
     Rewrite sqlglot AST to have normalized and qualified tables and columns.
 
@@ -62,19 +63,32 @@ def qualify(
     schema = ensure_schema(schema, dialect=dialect)
     expression = qualify_tables(expression, db=db, catalog=catalog, schema=schema)
     expression = normalize_identifiers(expression, dialect=dialect)
-
+    unknown_columns = []
+    unknown_tables = []
     if isolate_tables:
         expression = isolate_table_selects(expression, schema=schema)
 
     if qualify_columns:
-        expression = qualify_columns_func(
-            expression, schema, expand_alias_refs=expand_alias_refs, infer_schema=infer_schema
+        result_qualify_columns = qualify_columns_func(
+            expression, schema, expand_alias_refs=expand_alias_refs, infer_schema=infer_schema,
+            return_unknown=return_unknown,
         )
+        if return_unknown:
+            expression, unknown_columns = result_qualify_columns
+        else:
+            expression = result_qualify_columns
 
     if quote_identifiers:
         expression = quote_identifiers_func(expression, dialect=dialect, identify=identify)
 
     if validate_qualify_columns:
-        validate_qualify_columns_func(expression)
+        result_validate_qualify_columns = validate_qualify_columns_func(expression, return_unknown=return_unknown)
+        if return_unknown:
+            expression, unknown_tables = result_validate_qualify_columns
+        else:
+            expression = result_validate_qualify_columns
 
-    return expression
+    if return_unknown:
+        return expression, unknown_columns, unknown_tables
+    else:
+        return expression
