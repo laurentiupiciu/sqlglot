@@ -8,8 +8,10 @@ from sqlglot.schema import ensure_schema
 # Sentinel value that means an outer query selecting ALL columns
 SELECT_ALL = object()
 
+
 # Selection to use if selection list is empty
-DEFAULT_SELECTION = lambda: alias("1", "_")
+def default_selection(is_agg: bool) -> exp.Alias:
+    return alias(exp.Max(this=exp.Literal.number(1)) if is_agg else "1", "_")
 
 
 def pushdown_projections(expression, schema=None, remove_unused_selections=True):
@@ -31,6 +33,7 @@ def pushdown_projections(expression, schema=None, remove_unused_selections=True)
     """
     # Map of Scope to all columns being selected by outer queries.
     schema = ensure_schema(schema)
+    source_column_alias_count = {}
     referenced_columns = defaultdict(set)
 
     # We build the scope tree (which is traversed in DFS postorder), then iterate
@@ -38,10 +41,10 @@ def pushdown_projections(expression, schema=None, remove_unused_selections=True)
     # columns for a particular scope are completely build by the time we get to it.
     for scope in reversed(traverse_scope(expression)):
         parent_selections = referenced_columns.get(scope, {SELECT_ALL})
+        alias_count = source_column_alias_count.get(scope, 0)
 
-        if scope.expression.args.get("distinct") or scope.parent and scope.parent.pivots:
-            # We can't remove columns SELECT DISTINCT nor UNION DISTINCT. The same holds if
-            # we select from a pivoted source in the parent scope.
+        # We can't remove columns SELECT DISTINCT nor UNION DISTINCT.
+        if scope.expression.args.get("distinct"):
             parent_selections = {SELECT_ALL}
 
         if isinstance(scope.expression, exp.Union):
@@ -51,15 +54,19 @@ def pushdown_projections(expression, schema=None, remove_unused_selections=True)
             if any(select.is_star for select in right.expression.selects):
                 referenced_columns[right] = parent_selections
             elif not any(select.is_star for select in left.expression.selects):
-                referenced_columns[right] = [
-                    right.expression.selects[i].alias_or_name
-                    for i, select in enumerate(left.expression.selects)
-                    if SELECT_ALL in parent_selections or select.alias_or_name in parent_selections
-                ]
+                if scope.expression.args.get("by_name"):
+                    referenced_columns[right] = referenced_columns[left]
+                else:
+                    referenced_columns[right] = [
+                        right.expression.selects[i].alias_or_name
+                        for i, select in enumerate(left.expression.selects)
+                        if SELECT_ALL in parent_selections
+                        or select.alias_or_name in parent_selections
+                    ]
 
         if isinstance(scope.expression, exp.Select):
             if remove_unused_selections:
-                _remove_unused_selections(scope, parent_selections, schema)
+                _remove_unused_selections(scope, parent_selections, schema, alias_count)
 
             if scope.expression.is_star:
                 continue
@@ -72,15 +79,19 @@ def pushdown_projections(expression, schema=None, remove_unused_selections=True)
                 selects[table_name].add(col_name)
 
             # Push the selected columns down to the next scope
-            for name, (_, source) in scope.selected_sources.items():
+            for name, (node, source) in scope.selected_sources.items():
                 if isinstance(source, Scope):
-                    columns = selects.get(name) or set()
+                    columns = {SELECT_ALL} if scope.pivots else selects.get(name) or set()
                     referenced_columns[source].update(columns)
+
+                column_aliases = node.alias_column_names
+                if column_aliases:
+                    source_column_alias_count[source] = len(column_aliases)
 
     return expression
 
 
-def _remove_unused_selections(scope, parent_selections, schema):
+def _remove_unused_selections(scope, parent_selections, schema, alias_count):
     order = scope.expression.args.get("order")
 
     if order:
@@ -92,16 +103,23 @@ def _remove_unused_selections(scope, parent_selections, schema):
     new_selections = []
     removed = False
     star = False
+    is_agg = False
+
+    select_all = SELECT_ALL in parent_selections
 
     for selection in scope.expression.selects:
         name = selection.alias_or_name
 
-        if SELECT_ALL in parent_selections or name in parent_selections or name in order_refs:
+        if select_all or name in parent_selections or name in order_refs or alias_count > 0:
             new_selections.append(selection)
+            alias_count -= 1
         else:
             if selection.is_star:
                 star = True
             removed = True
+
+        if not is_agg and selection.find(exp.AggFunc):
+            is_agg = True
 
     if star:
         resolver = Resolver(scope, schema)
@@ -115,7 +133,7 @@ def _remove_unused_selections(scope, parent_selections, schema):
 
     # If there are no remaining selections, just select a single constant
     if not new_selections:
-        new_selections.append(DEFAULT_SELECTION())
+        new_selections.append(default_selection(is_agg))
 
     scope.expression.select(*new_selections, append=False, copy=False)
 

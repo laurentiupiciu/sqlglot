@@ -84,11 +84,11 @@ def min(col: ColumnOrName) -> Column:
 
 
 def max_by(col: ColumnOrName, ord: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "MAX_BY", ord)
+    return Column.invoke_expression_over_column(col, expression.ArgMax, expression=ord)
 
 
 def min_by(col: ColumnOrName, ord: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "MIN_BY", ord)
+    return Column.invoke_expression_over_column(col, expression.ArgMin, expression=ord)
 
 
 def count(col: ColumnOrName) -> Column:
@@ -148,7 +148,7 @@ def atanh(col: ColumnOrName) -> Column:
 
 
 def cbrt(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "CBRT")
+    return Column.invoke_expression_over_column(col, expression.Cbrt)
 
 
 def ceil(col: ColumnOrName) -> Column:
@@ -184,7 +184,7 @@ def floor(col: ColumnOrName) -> Column:
 
 
 def log10(col: ColumnOrName) -> Column:
-    return Column.invoke_expression_over_column(col, expression.Log10)
+    return Column.invoke_expression_over_column(lit(10), expression.Log, expression=col)
 
 
 def log1p(col: ColumnOrName) -> Column:
@@ -192,7 +192,7 @@ def log1p(col: ColumnOrName) -> Column:
 
 
 def log2(col: ColumnOrName) -> Column:
-    return Column.invoke_expression_over_column(col, expression.Log2)
+    return Column.invoke_expression_over_column(lit(2), expression.Log, expression=col)
 
 
 def log(arg1: t.Union[ColumnOrName, float], arg2: t.Optional[ColumnOrName] = None) -> Column:
@@ -210,7 +210,7 @@ def sec(col: ColumnOrName) -> Column:
 
 
 def signum(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "SIGNUM")
+    return Column.invoke_expression_over_column(col, expression.Sign)
 
 
 def sin(col: ColumnOrName) -> Column:
@@ -306,7 +306,7 @@ def collect_list(col: ColumnOrName) -> Column:
 
 
 def collect_set(col: ColumnOrName) -> Column:
-    return Column.invoke_expression_over_column(col, expression.SetAgg)
+    return Column.invoke_expression_over_column(col, expression.ArrayUniqueAgg)
 
 
 def hypot(col1: t.Union[ColumnOrName, float], col2: t.Union[ColumnOrName, float]) -> Column:
@@ -356,21 +356,22 @@ def coalesce(*cols: ColumnOrName) -> Column:
 
 
 def corr(col1: ColumnOrName, col2: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col1, "CORR", col2)
+    return Column.invoke_expression_over_column(col1, expression.Corr, expression=col2)
 
 
 def covar_pop(col1: ColumnOrName, col2: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col1, "COVAR_POP", col2)
+    return Column.invoke_expression_over_column(col1, expression.CovarPop, expression=col2)
 
 
 def covar_samp(col1: ColumnOrName, col2: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col1, "COVAR_SAMP", col2)
+    return Column.invoke_expression_over_column(col1, expression.CovarSamp, expression=col2)
 
 
 def first(col: ColumnOrName, ignorenulls: t.Optional[bool] = None) -> Column:
-    if ignorenulls is not None:
-        return Column.invoke_anonymous_function(col, "FIRST", ignorenulls)
-    return Column.invoke_anonymous_function(col, "FIRST")
+    this = Column.invoke_expression_over_column(col, expression.First)
+    if ignorenulls:
+        return Column.invoke_expression_over_column(this, expression.IgnoreNulls)
+    return this
 
 
 def grouping_id(*cols: ColumnOrName) -> Column:
@@ -394,9 +395,10 @@ def isnull(col: ColumnOrName) -> Column:
 
 
 def last(col: ColumnOrName, ignorenulls: t.Optional[bool] = None) -> Column:
-    if ignorenulls is not None:
-        return Column.invoke_anonymous_function(col, "LAST", ignorenulls)
-    return Column.invoke_anonymous_function(col, "LAST")
+    this = Column.invoke_expression_over_column(col, expression.Last)
+    if ignorenulls:
+        return Column.invoke_expression_over_column(this, expression.IgnoreNulls)
+    return this
 
 
 def monotonically_increasing_id() -> Column:
@@ -422,11 +424,11 @@ def percentile_approx(
 
 
 def rand(seed: t.Optional[ColumnOrLiteral] = None) -> Column:
-    return Column.invoke_anonymous_function(seed, "RAND")
+    return Column.invoke_expression_over_column(seed, expression.Rand)
 
 
 def randn(seed: t.Optional[ColumnOrLiteral] = None) -> Column:
-    return Column.invoke_anonymous_function(seed, "RANDN")
+    return Column.invoke_expression_over_column(seed, expression.Randn)
 
 
 def round(col: ColumnOrName, scale: t.Optional[int] = None) -> Column:
@@ -489,31 +491,28 @@ def factorial(col: ColumnOrName) -> Column:
 def lag(
     col: ColumnOrName, offset: t.Optional[int] = 1, default: t.Optional[ColumnOrLiteral] = None
 ) -> Column:
-    if default is not None:
-        return Column.invoke_anonymous_function(col, "LAG", offset, default)
-    if offset != 1:
-        return Column.invoke_anonymous_function(col, "LAG", offset)
-    return Column.invoke_anonymous_function(col, "LAG")
+    return Column.invoke_expression_over_column(
+        col, expression.Lag, offset=None if offset == 1 else offset, default=default
+    )
 
 
 def lead(
     col: ColumnOrName, offset: t.Optional[int] = 1, default: t.Optional[t.Any] = None
 ) -> Column:
-    if default is not None:
-        return Column.invoke_anonymous_function(col, "LEAD", offset, default)
-    if offset != 1:
-        return Column.invoke_anonymous_function(col, "LEAD", offset)
-    return Column.invoke_anonymous_function(col, "LEAD")
+    return Column.invoke_expression_over_column(
+        col, expression.Lead, offset=None if offset == 1 else offset, default=default
+    )
 
 
 def nth_value(
     col: ColumnOrName, offset: t.Optional[int] = 1, ignoreNulls: t.Optional[bool] = None
 ) -> Column:
+    this = Column.invoke_expression_over_column(
+        col, expression.NthValue, offset=None if offset == 1 else offset
+    )
     if ignoreNulls is not None:
-        raise NotImplementedError("There is currently not support for `ignoreNulls` parameter")
-    if offset != 1:
-        return Column.invoke_anonymous_function(col, "NTH_VALUE", offset)
-    return Column.invoke_anonymous_function(col, "NTH_VALUE")
+        return Column.invoke_expression_over_column(this, expression.IgnoreNulls)
+    return this
 
 
 def ntile(n: int) -> Column:
@@ -537,7 +536,7 @@ def year(col: ColumnOrName) -> Column:
 
 
 def quarter(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "QUARTER")
+    return Column.invoke_expression_over_column(col, expression.Quarter)
 
 
 def month(col: ColumnOrName) -> Column:
@@ -578,13 +577,13 @@ def make_date(year: ColumnOrName, month: ColumnOrName, day: ColumnOrName) -> Col
 
 def date_add(col: ColumnOrName, days: t.Union[ColumnOrName, int]) -> Column:
     return Column.invoke_expression_over_column(
-        col, expression.DateAdd, expression=days, unit=expression.Var(this="day")
+        col, expression.DateAdd, expression=days, unit=expression.Var(this="DAY")
     )
 
 
 def date_sub(col: ColumnOrName, days: t.Union[ColumnOrName, int]) -> Column:
     return Column.invoke_expression_over_column(
-        col, expression.DateSub, expression=days, unit=expression.Var(this="day")
+        col, expression.DateSub, expression=days, unit=expression.Var(this="DAY")
     )
 
 
@@ -593,7 +592,7 @@ def date_diff(end: ColumnOrName, start: ColumnOrName) -> Column:
 
 
 def add_months(start: ColumnOrName, months: t.Union[ColumnOrName, int]) -> Column:
-    return Column.invoke_anonymous_function(start, "ADD_MONTHS", months)
+    return Column.invoke_expression_over_column(start, expression.AddMonths, expression=months)
 
 
 def months_between(
@@ -639,7 +638,7 @@ def next_day(col: ColumnOrName, dayOfWeek: str) -> Column:
 
 
 def last_day(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "LAST_DAY")
+    return Column.invoke_expression_over_column(col, expression.LastDay)
 
 
 def from_unixtime(col: ColumnOrName, format: t.Optional[str] = None) -> Column:
@@ -660,12 +659,12 @@ def unix_timestamp(
 
 def from_utc_timestamp(timestamp: ColumnOrName, tz: ColumnOrName) -> Column:
     tz_column = tz if isinstance(tz, Column) else lit(tz)
-    return Column.invoke_anonymous_function(timestamp, "FROM_UTC_TIMESTAMP", tz_column)
+    return Column.invoke_expression_over_column(timestamp, expression.AtTimeZone, zone=tz_column)
 
 
 def to_utc_timestamp(timestamp: ColumnOrName, tz: ColumnOrName) -> Column:
     tz_column = tz if isinstance(tz, Column) else lit(tz)
-    return Column.invoke_anonymous_function(timestamp, "TO_UTC_TIMESTAMP", tz_column)
+    return Column.invoke_expression_over_column(timestamp, expression.FromTimeZone, zone=tz_column)
 
 
 def timestamp_seconds(col: ColumnOrName) -> Column:
@@ -972,10 +971,10 @@ def array_join(
 ) -> Column:
     if null_replacement is not None:
         return Column.invoke_expression_over_column(
-            col, expression.ArrayJoin, expression=lit(delimiter), null=lit(null_replacement)
+            col, expression.ArrayToString, expression=lit(delimiter), null=lit(null_replacement)
         )
     return Column.invoke_expression_over_column(
-        col, expression.ArrayJoin, expression=lit(delimiter)
+        col, expression.ArrayToString, expression=lit(delimiter)
     )
 
 
@@ -1023,15 +1022,15 @@ def posexplode(col: ColumnOrName) -> Column:
 
 
 def explode_outer(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "EXPLODE_OUTER")
+    return Column.invoke_expression_over_column(col, expression.ExplodeOuter)
 
 
 def posexplode_outer(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "POSEXPLODE_OUTER")
+    return Column.invoke_expression_over_column(col, expression.PosexplodeOuter)
 
 
 def get_json_object(col: ColumnOrName, path: str) -> Column:
-    return Column.invoke_expression_over_column(col, expression.JSONExtract, path=lit(path))
+    return Column.invoke_expression_over_column(col, expression.JSONExtract, expression=lit(path))
 
 
 def json_tuple(col: ColumnOrName, *fields: str) -> Column:
@@ -1117,7 +1116,7 @@ def reverse(col: ColumnOrName) -> Column:
 
 
 def flatten(col: ColumnOrName) -> Column:
-    return Column.invoke_anonymous_function(col, "FLATTEN")
+    return Column.invoke_expression_over_column(col, expression.Flatten)
 
 
 def map_keys(col: ColumnOrName) -> Column:

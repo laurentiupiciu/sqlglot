@@ -166,32 +166,30 @@ class TestSchema(unittest.TestCase):
         schema = MappingSchema({"A": {"b": "varchar"}})
         self.assertEqual(schema.get_column_type("a", "B").this, exp.DataType.Type.VARCHAR)
         self.assertEqual(
-            schema.get_column_type(exp.Table(this="a"), exp.Column(this="b")).this,
+            schema.get_column_type(exp.table_("a"), exp.column("b")).this,
             exp.DataType.Type.VARCHAR,
         )
         self.assertEqual(
-            schema.get_column_type("a", exp.Column(this="b")).this, exp.DataType.Type.VARCHAR
+            schema.get_column_type("a", exp.column("b")).this, exp.DataType.Type.VARCHAR
         )
         self.assertEqual(
-            schema.get_column_type(exp.Table(this="a"), "b").this, exp.DataType.Type.VARCHAR
+            schema.get_column_type(exp.table_("a"), "b").this, exp.DataType.Type.VARCHAR
         )
         schema = MappingSchema({"a": {"b": {"c": "varchar"}}})
         self.assertEqual(
-            schema.get_column_type(exp.Table(this="b", db="a"), exp.Column(this="c")).this,
+            schema.get_column_type(exp.table_("b", db="a"), exp.column("c")).this,
             exp.DataType.Type.VARCHAR,
         )
         self.assertEqual(
-            schema.get_column_type(exp.Table(this="b", db="a"), "c").this, exp.DataType.Type.VARCHAR
+            schema.get_column_type(exp.table_("b", db="a"), "c").this, exp.DataType.Type.VARCHAR
         )
         schema = MappingSchema({"a": {"b": {"c": {"d": "varchar"}}}})
         self.assertEqual(
-            schema.get_column_type(
-                exp.Table(this="c", db="b", catalog="a"), exp.Column(this="d")
-            ).this,
+            schema.get_column_type(exp.table_("c", db="b", catalog="a"), exp.column("d")).this,
             exp.DataType.Type.VARCHAR,
         )
         self.assertEqual(
-            schema.get_column_type(exp.Table(this="c", db="b", catalog="a"), "d").this,
+            schema.get_column_type(exp.table_("c", db="b", catalog="a"), "d").this,
             exp.DataType.Type.VARCHAR,
         )
 
@@ -204,27 +202,27 @@ class TestSchema(unittest.TestCase):
             dialect="clickhouse",
         )
 
-        table_z = exp.Table(this="z", db="y", catalog="x")
-        table_w = exp.Table(this="w", db="y", catalog="x")
+        table_z = exp.table_("z", db="y", catalog="x")
+        table_w = exp.table_("w", db="y", catalog="x")
 
         self.assertEqual(schema.column_names(table_z), ["a", "B"])
         self.assertEqual(schema.column_names(table_w), ["c"])
 
         schema = MappingSchema(schema={"x": {"`y`": "INT"}}, dialect="clickhouse")
-        self.assertEqual(schema.column_names(exp.Table(this="x")), ["y"])
+        self.assertEqual(schema.column_names(exp.table_("x")), ["y"])
 
         # Check that add_table normalizes both the table and the column names to be added / updated
         schema = MappingSchema()
         schema.add_table("Foo", {"SomeColumn": "INT", '"SomeColumn"': "DOUBLE"})
-        self.assertEqual(schema.column_names(exp.Table(this="fOO")), ["somecolumn", "SomeColumn"])
+        self.assertEqual(schema.column_names(exp.table_("fOO")), ["somecolumn", "SomeColumn"])
 
         # Check that names are normalized to uppercase for Snowflake
         schema = MappingSchema(schema={"x": {"foo": "int", '"bLa"': "int"}}, dialect="snowflake")
-        self.assertEqual(schema.column_names(exp.Table(this="x")), ["FOO", "bLa"])
+        self.assertEqual(schema.column_names(exp.table_("x")), ["FOO", "bLa"])
 
         # Check that switching off the normalization logic works as expected
         schema = MappingSchema(schema={"x": {"foo": "int"}}, normalize=False, dialect="snowflake")
-        self.assertEqual(schema.column_names(exp.Table(this="x")), ["foo"])
+        self.assertEqual(schema.column_names(exp.table_("x")), ["foo"])
 
         # Check that the correct dialect is used when calling schema methods
         # Note: T-SQL is case-insensitive by default, so `fo` in clickhouse will match the normalized table name
@@ -272,3 +270,8 @@ class TestSchema(unittest.TestCase):
             str(ctx.exception),
             "Table z must match the schema's nesting level: 2.",
         )
+
+    def test_has_column(self):
+        schema = MappingSchema({"x": {"c": "int"}})
+        self.assertTrue(schema.has_column("x", exp.column("c")))
+        self.assertFalse(schema.has_column("x", exp.column("k")))

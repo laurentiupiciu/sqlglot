@@ -27,9 +27,9 @@ class TestFunctions(unittest.TestCase):
         test_null = SF.lit(None)
         self.assertEqual("NULL", test_null.sql())
         test_date = SF.lit(datetime.date(2022, 1, 1))
-        self.assertEqual("TO_DATE('2022-01-01')", test_date.sql())
+        self.assertEqual("CAST('2022-01-01' AS DATE)", test_date.sql())
         test_datetime = SF.lit(datetime.datetime(2022, 1, 1, 1, 1, 1))
-        self.assertEqual("CAST('2022-01-01T01:01:01+00:00' AS TIMESTAMP)", test_datetime.sql())
+        self.assertEqual("CAST('2022-01-01 01:01:01+00:00' AS TIMESTAMP)", test_datetime.sql())
         test_dict = SF.lit({"cola": 1, "colb": "test"})
         self.assertEqual("STRUCT(1 AS cola, 'test' AS colb)", test_dict.sql())
 
@@ -49,9 +49,9 @@ class TestFunctions(unittest.TestCase):
         test_array = SF.col([1, 2, "3"])
         self.assertEqual("ARRAY(1, 2, '3')", test_array.sql())
         test_date = SF.col(datetime.date(2022, 1, 1))
-        self.assertEqual("TO_DATE('2022-01-01')", test_date.sql())
+        self.assertEqual("CAST('2022-01-01' AS DATE)", test_date.sql())
         test_datetime = SF.col(datetime.datetime(2022, 1, 1, 1, 1, 1))
-        self.assertEqual("CAST('2022-01-01T01:01:01+00:00' AS TIMESTAMP)", test_datetime.sql())
+        self.assertEqual("CAST('2022-01-01 01:01:01+00:00' AS TIMESTAMP)", test_datetime.sql())
         test_dict = SF.col({"cola": 1, "colb": "test"})
         self.assertEqual("STRUCT(1 AS cola, 'test' AS colb)", test_dict.sql())
 
@@ -250,9 +250,9 @@ class TestFunctions(unittest.TestCase):
 
     def test_log10(self):
         col_str = SF.log10("cola")
-        self.assertEqual("LOG10(cola)", col_str.sql())
+        self.assertEqual("LOG(10, cola)", col_str.sql())
         col = SF.log10(SF.col("cola"))
-        self.assertEqual("LOG10(cola)", col.sql())
+        self.assertEqual("LOG(10, cola)", col.sql())
 
     def test_log1p(self):
         col_str = SF.log1p("cola")
@@ -262,9 +262,9 @@ class TestFunctions(unittest.TestCase):
 
     def test_log2(self):
         col_str = SF.log2("cola")
-        self.assertEqual("LOG2(cola)", col_str.sql())
+        self.assertEqual("LOG(2, cola)", col_str.sql())
         col = SF.log2(SF.col("cola"))
-        self.assertEqual("LOG2(cola)", col.sql())
+        self.assertEqual("LOG(2, cola)", col.sql())
 
     def test_rint(self):
         col_str = SF.rint("cola")
@@ -280,9 +280,9 @@ class TestFunctions(unittest.TestCase):
 
     def test_signum(self):
         col_str = SF.signum("cola")
-        self.assertEqual("SIGNUM(cola)", col_str.sql())
+        self.assertEqual("SIGN(cola)", col_str.sql())
         col = SF.signum(SF.col("cola"))
-        self.assertEqual("SIGNUM(cola)", col.sql())
+        self.assertEqual("SIGN(cola)", col.sql())
 
     def test_sin(self):
         col_str = SF.sin("cola")
@@ -335,18 +335,18 @@ class TestFunctions(unittest.TestCase):
     def test_asc_nulls_first(self):
         col_str = SF.asc_nulls_first("cola")
         self.assertIsInstance(col_str.expression, exp.Ordered)
-        self.assertEqual("cola", col_str.sql())
+        self.assertEqual("cola ASC", col_str.sql())
         col = SF.asc_nulls_first(SF.col("cola"))
         self.assertIsInstance(col.expression, exp.Ordered)
-        self.assertEqual("cola", col.sql())
+        self.assertEqual("cola ASC", col.sql())
 
     def test_asc_nulls_last(self):
         col_str = SF.asc_nulls_last("cola")
         self.assertIsInstance(col_str.expression, exp.Ordered)
-        self.assertEqual("cola NULLS LAST", col_str.sql())
+        self.assertEqual("cola ASC NULLS LAST", col_str.sql())
         col = SF.asc_nulls_last(SF.col("cola"))
         self.assertIsInstance(col.expression, exp.Ordered)
-        self.assertEqual("cola NULLS LAST", col.sql())
+        self.assertEqual("cola ASC NULLS LAST", col.sql())
 
     def test_desc_nulls_first(self):
         col_str = SF.desc_nulls_first("cola")
@@ -528,7 +528,7 @@ class TestFunctions(unittest.TestCase):
         col = SF.first(SF.col("cola"))
         self.assertEqual("FIRST(cola)", col.sql())
         ignore_nulls = SF.first("cola", True)
-        self.assertEqual("FIRST(cola, TRUE)", ignore_nulls.sql())
+        self.assertEqual("FIRST(cola) IGNORE NULLS", ignore_nulls.sql())
 
     def test_grouping_id(self):
         col_str = SF.grouping_id("cola", "colb")
@@ -562,7 +562,7 @@ class TestFunctions(unittest.TestCase):
         col = SF.last(SF.col("cola"))
         self.assertEqual("LAST(cola)", col.sql())
         ignore_nulls = SF.last("cola", True)
-        self.assertEqual("LAST(cola, TRUE)", ignore_nulls.sql())
+        self.assertEqual("LAST(cola) IGNORE NULLS", ignore_nulls.sql())
 
     def test_monotonically_increasing_id(self):
         col = SF.monotonically_increasing_id()
@@ -713,8 +713,10 @@ class TestFunctions(unittest.TestCase):
         self.assertEqual("NTH_VALUE(cola, 3)", col.sql())
         col_no_offset = SF.nth_value("cola")
         self.assertEqual("NTH_VALUE(cola)", col_no_offset.sql())
-        with self.assertRaises(NotImplementedError):
-            SF.nth_value("cola", ignoreNulls=True)
+
+        self.assertEqual(
+            "NTH_VALUE(cola) IGNORE NULLS", SF.nth_value("cola", ignoreNulls=True).sql()
+        )
 
     def test_ntile(self):
         col = SF.ntile(2)
@@ -809,7 +811,7 @@ class TestFunctions(unittest.TestCase):
         self.assertEqual("DATE_ADD(cola, colb)", col_col_for_add.sql())
         current_date_add = SF.date_add(SF.current_date(), 5)
         self.assertEqual("DATE_ADD(CURRENT_DATE, 5)", current_date_add.sql())
-        self.assertEqual("DATEADD(day, 5, CURRENT_DATE)", current_date_add.sql(dialect="snowflake"))
+        self.assertEqual("DATEADD(DAY, 5, CURRENT_DATE)", current_date_add.sql(dialect="snowflake"))
 
     def test_date_sub(self):
         col_str = SF.date_sub("cola", 2)
@@ -859,15 +861,15 @@ class TestFunctions(unittest.TestCase):
 
     def test_trunc(self):
         col_str = SF.trunc("cola", "year")
-        self.assertEqual("TRUNC(cola, 'year')", col_str.sql())
+        self.assertEqual("TRUNC(cola, 'YEAR')", col_str.sql())
         col = SF.trunc(SF.col("cola"), "year")
-        self.assertEqual("TRUNC(cola, 'year')", col.sql())
+        self.assertEqual("TRUNC(cola, 'YEAR')", col.sql())
 
     def test_date_trunc(self):
         col_str = SF.date_trunc("year", "cola")
-        self.assertEqual("DATE_TRUNC('year', cola)", col_str.sql())
-        col = SF.date_trunc("year", SF.col("cola"))
-        self.assertEqual("DATE_TRUNC('year', cola)", col.sql())
+        self.assertEqual("DATE_TRUNC('YEAR', cola)", col_str.sql())
+        col = SF.date_trunc("YEAR", SF.col("cola"))
+        self.assertEqual("DATE_TRUNC('YEAR', cola)", col.sql())
 
     def test_next_day(self):
         col_str = SF.next_day("cola", "Mon")
@@ -1154,17 +1156,17 @@ class TestFunctions(unittest.TestCase):
 
     def test_regexp_extract(self):
         col_str = SF.regexp_extract("cola", r"(\d+)-(\d+)", 1)
-        self.assertEqual("REGEXP_EXTRACT(cola, '(\\d+)-(\\d+)', 1)", col_str.sql())
+        self.assertEqual("REGEXP_EXTRACT(cola, '(\\\\d+)-(\\\\d+)', 1)", col_str.sql())
         col = SF.regexp_extract(SF.col("cola"), r"(\d+)-(\d+)", 1)
-        self.assertEqual("REGEXP_EXTRACT(cola, '(\\d+)-(\\d+)', 1)", col.sql())
+        self.assertEqual("REGEXP_EXTRACT(cola, '(\\\\d+)-(\\\\d+)', 1)", col.sql())
         col_no_idx = SF.regexp_extract(SF.col("cola"), r"(\d+)-(\d+)")
-        self.assertEqual("REGEXP_EXTRACT(cola, '(\\d+)-(\\d+)')", col_no_idx.sql())
+        self.assertEqual("REGEXP_EXTRACT(cola, '(\\\\d+)-(\\\\d+)')", col_no_idx.sql())
 
     def test_regexp_replace(self):
         col_str = SF.regexp_replace("cola", r"(\d+)", "--")
-        self.assertEqual("REGEXP_REPLACE(cola, '(\\d+)', '--')", col_str.sql())
+        self.assertEqual("REGEXP_REPLACE(cola, '(\\\\d+)', '--')", col_str.sql())
         col = SF.regexp_replace(SF.col("cola"), r"(\d+)", "--")
-        self.assertEqual("REGEXP_REPLACE(cola, '(\\d+)', '--')", col.sql())
+        self.assertEqual("REGEXP_REPLACE(cola, '(\\\\d+)', '--')", col.sql())
 
     def test_initcap(self):
         col_str = SF.initcap("cola")

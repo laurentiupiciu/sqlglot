@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import functools
+import logging
 import typing as t
 import zlib
 from copy import copy
 
 import sqlglot
-from sqlglot import expressions as exp
+from sqlglot import Dialect, expressions as exp
 from sqlglot.dataframe.sql import functions as F
 from sqlglot.dataframe.sql.column import Column
 from sqlglot.dataframe.sql.group import GroupedData
@@ -17,7 +18,6 @@ from sqlglot.dataframe.sql.transforms import replace_id_value
 from sqlglot.dataframe.sql.util import get_tables_from_expression_with_join
 from sqlglot.dataframe.sql.window import Window
 from sqlglot.helper import ensure_list, object_to_dict, seq_get
-from sqlglot.optimizer import optimize as optimize_func
 
 if t.TYPE_CHECKING:
     from sqlglot.dataframe.sql._typing import (
@@ -27,7 +27,9 @@ if t.TYPE_CHECKING:
         OutputExpressionContainer,
     )
     from sqlglot.dataframe.sql.session import SparkSession
+    from sqlglot.dialects.dialect import DialectType
 
+logger = logging.getLogger("sqlglot")
 
 JOIN_HINTS = {
     "BROADCAST",
@@ -117,7 +119,9 @@ class DataFrame:
                 self._create_hash_from_expression(cte.this), quoted=old_name_id.args["quoted"]
             )
             replacement_mapping[old_name_id] = new_hashed_id
-            expression = expression.transform(replace_id_value, replacement_mapping)
+            expression = expression.transform(replace_id_value, replacement_mapping).assert_is(
+                exp.Select
+            )
         return expression
 
     def _create_cte_from_expression(
@@ -136,12 +140,10 @@ class DataFrame:
         return cte, name
 
     @t.overload
-    def _ensure_list_of_columns(self, cols: t.Collection[ColumnOrLiteral]) -> t.List[Column]:
-        ...
+    def _ensure_list_of_columns(self, cols: t.Collection[ColumnOrLiteral]) -> t.List[Column]: ...
 
     @t.overload
-    def _ensure_list_of_columns(self, cols: ColumnOrLiteral) -> t.List[Column]:
-        ...
+    def _ensure_list_of_columns(self, cols: ColumnOrLiteral) -> t.List[Column]: ...
 
     def _ensure_list_of_columns(self, cols):
         return Column.ensure_cols(ensure_list(cols))
@@ -264,7 +266,9 @@ class DataFrame:
 
     @classmethod
     def _create_hash_from_expression(cls, expression: exp.Expression) -> str:
-        value = expression.sql(dialect="spark").encode("utf-8")
+        from sqlglot.dataframe.sql.session import SparkSession
+
+        value = expression.sql(dialect=SparkSession().dialect).encode("utf-8")
         return f"t{zlib.crc32(value)}"[:6]
 
     def _get_select_expressions(
@@ -291,16 +295,27 @@ class DataFrame:
         select_expressions.append(expression_select_pair)  # type: ignore
         return select_expressions
 
-    def sql(self, dialect="spark", optimize=True, **kwargs) -> t.List[str]:
+    def sql(self, dialect: DialectType = None, optimize: bool = True, **kwargs) -> t.List[str]:
+        from sqlglot.dataframe.sql.session import SparkSession
+
+        dialect = Dialect.get_or_raise(dialect or SparkSession().dialect)
+
         df = self._resolve_pending_hints()
         select_expressions = df._get_select_expressions()
         output_expressions: t.List[t.Union[exp.Select, exp.Cache, exp.Drop]] = []
         replacement_mapping: t.Dict[exp.Identifier, exp.Identifier] = {}
+
         for expression_type, select_expression in select_expressions:
-            select_expression = select_expression.transform(replace_id_value, replacement_mapping)
+            select_expression = select_expression.transform(
+                replace_id_value, replacement_mapping
+            ).assert_is(exp.Select)
             if optimize:
-                select_expression = t.cast(exp.Select, optimize_func(select_expression))
+                select_expression = t.cast(
+                    exp.Select, self.spark._optimize(select_expression, dialect=dialect)
+                )
+
             select_expression = df._replace_cte_names_with_hashes(select_expression)
+
             expression: t.Union[exp.Select, exp.Cache, exp.Drop]
             if expression_type == exp.Cache:
                 cache_table_name = df._create_hash_from_expression(select_expression)
@@ -313,11 +328,12 @@ class DataFrame:
                 sqlglot.schema.add_table(
                     cache_table_name,
                     {
-                        expression.alias_or_name: expression.type.sql("spark")
+                        expression.alias_or_name: expression.type.sql(dialect=dialect)
                         for expression in select_expression.expressions
                     },
-                    dialect="spark",
+                    dialect=dialect,
                 )
+
                 cache_storage_level = select_expression.args["cache_storage_level"]
                 options = [
                     exp.Literal.string("storageLevel"),
@@ -326,6 +342,7 @@ class DataFrame:
                 expression = exp.Cache(
                     this=cache_table, expression=select_expression, lazy=True, options=options
                 )
+
                 # We will drop the "view" if it exists before running the cache table
                 output_expressions.append(exp.Drop(this=cache_table, exists=True, kind="VIEW"))
             elif expression_type == exp.Create:
@@ -336,17 +353,17 @@ class DataFrame:
                 select_without_ctes = select_expression.copy()
                 select_without_ctes.set("with", None)
                 expression.set("expression", select_without_ctes)
+
                 if select_expression.ctes:
                     expression.set("with", exp.With(expressions=select_expression.ctes))
             elif expression_type == exp.Select:
                 expression = select_expression
             else:
                 raise ValueError(f"Invalid expression type: {expression_type}")
+
             output_expressions.append(expression)
 
-        return [
-            expression.sql(**{"dialect": dialect, **kwargs}) for expression in output_expressions
-        ]
+        return [expression.sql(dialect=dialect, **kwargs) for expression in output_expressions]
 
     def copy(self, **kwargs) -> DataFrame:
         return DataFrame(**object_to_dict(self, **kwargs))
@@ -478,9 +495,11 @@ class DataFrame:
             join_column_names = [left_col.alias_or_name for left_col, _ in join_column_pairs]
             # To match spark behavior only the join clause gets deduplicated and it gets put in the front of the column list
             select_column_names = [
-                column.alias_or_name
-                if not isinstance(column.expression.this, exp.Star)
-                else column.sql()
+                (
+                    column.alias_or_name
+                    if not isinstance(column.expression.this, exp.Star)
+                    else column.sql()
+                )
                 for column in self_columns + other_columns
             ]
             select_column_names = [
@@ -522,12 +541,7 @@ class DataFrame:
         """
         columns = self._ensure_and_normalize_cols(cols)
         pre_ordered_col_indexes = [
-            x
-            for x in [
-                i if isinstance(col.expression, exp.Ordered) else None
-                for i, col in enumerate(columns)
-            ]
-            if x is not None
+            i for i, col in enumerate(columns) if isinstance(col.expression, exp.Ordered)
         ]
         if ascending is None:
             ascending = [True] * len(columns)
@@ -539,9 +553,11 @@ class DataFrame:
         ), "The length of items in ascending must equal the number of columns provided"
         col_and_ascending = list(zip(columns, ascending))
         order_by_columns = [
-            exp.Ordered(this=col.expression, desc=not asc)
-            if i not in pre_ordered_col_indexes
-            else columns[i].column_expression
+            (
+                exp.Ordered(this=col.expression, desc=not asc)
+                if i not in pre_ordered_col_indexes
+                else columns[i].column_expression
+            )
             for i, (col, asc) in enumerate(col_and_ascending)
         ]
         return self.copy(expression=self.expression.order_by(*order_by_columns))

@@ -95,16 +95,16 @@ class TestDataframeColumn(unittest.TestCase):
         self.assertEqual("cola IN (1, 2, 3)", F.col("cola").isin(1, 2, 3).sql())
 
     def test_asc(self):
-        self.assertEqual("cola", F.col("cola").asc().sql())
+        self.assertEqual("cola ASC", F.col("cola").asc().sql())
 
     def test_desc(self):
         self.assertEqual("cola DESC", F.col("cola").desc().sql())
 
     def test_asc_nulls_first(self):
-        self.assertEqual("cola", F.col("cola").asc_nulls_first().sql())
+        self.assertEqual("cola ASC", F.col("cola").asc_nulls_first().sql())
 
     def test_asc_nulls_last(self):
-        self.assertEqual("cola NULLS LAST", F.col("cola").asc_nulls_last().sql())
+        self.assertEqual("cola ASC NULLS LAST", F.col("cola").asc_nulls_last().sql())
 
     def test_desc_nulls_first(self):
         self.assertEqual("cola DESC NULLS FIRST", F.col("cola").desc_nulls_first().sql())
@@ -146,12 +146,12 @@ class TestDataframeColumn(unittest.TestCase):
         self.assertEqual("cola BETWEEN 1 AND 3", F.col("cola").between(1, 3).sql())
         self.assertEqual("cola BETWEEN 10.1 AND 12.1", F.col("cola").between(10.1, 12.1).sql())
         self.assertEqual(
-            "cola BETWEEN TO_DATE('2022-01-01') AND TO_DATE('2022-03-01')",
+            "cola BETWEEN CAST('2022-01-01' AS DATE) AND CAST('2022-03-01' AS DATE)",
             F.col("cola").between(datetime.date(2022, 1, 1), datetime.date(2022, 3, 1)).sql(),
         )
         self.assertEqual(
-            "cola BETWEEN CAST('2022-01-01T01:01:01+00:00' AS TIMESTAMP) "
-            "AND CAST('2022-03-01T01:01:01+00:00' AS TIMESTAMP)",
+            "cola BETWEEN CAST('2022-01-01 01:01:01+00:00' AS TIMESTAMP) "
+            "AND CAST('2022-03-01 01:01:01+00:00' AS TIMESTAMP)",
             F.col("cola")
             .between(datetime.datetime(2022, 1, 1, 1, 1, 1), datetime.datetime(2022, 3, 1, 1, 1, 1))
             .sql(),

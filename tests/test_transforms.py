@@ -52,17 +52,17 @@ class TestTransforms(unittest.TestCase):
         self.validate(
             eliminate_distinct_on,
             "SELECT DISTINCT ON (a) a, b FROM x ORDER BY c DESC",
-            'SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a ORDER BY c DESC) AS _row_number FROM x) WHERE "_row_number" = 1',
+            "SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a ORDER BY c DESC) AS _row_number FROM x) AS _t WHERE _row_number = 1",
         )
         self.validate(
             eliminate_distinct_on,
             "SELECT DISTINCT ON (a) a, b FROM x",
-            'SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a) AS _row_number FROM x) WHERE "_row_number" = 1',
+            "SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a ORDER BY a) AS _row_number FROM x) AS _t WHERE _row_number = 1",
         )
         self.validate(
             eliminate_distinct_on,
             "SELECT DISTINCT ON (a, b) a, b FROM x ORDER BY c DESC",
-            'SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a, b ORDER BY c DESC) AS _row_number FROM x) WHERE "_row_number" = 1',
+            "SELECT a, b FROM (SELECT a, b, ROW_NUMBER() OVER (PARTITION BY a, b ORDER BY c DESC) AS _row_number FROM x) AS _t WHERE _row_number = 1",
         )
         self.validate(
             eliminate_distinct_on,
@@ -72,7 +72,7 @@ class TestTransforms(unittest.TestCase):
         self.validate(
             eliminate_distinct_on,
             "SELECT DISTINCT ON (_row_number) _row_number FROM x ORDER BY c DESC",
-            'SELECT _row_number FROM (SELECT _row_number, ROW_NUMBER() OVER (PARTITION BY _row_number ORDER BY c DESC) AS _row_number_2 FROM x) WHERE "_row_number_2" = 1',
+            "SELECT _row_number FROM (SELECT _row_number, ROW_NUMBER() OVER (PARTITION BY _row_number ORDER BY c DESC) AS _row_number_2 FROM x) AS _t WHERE _row_number_2 = 1",
         )
 
     def test_eliminate_qualify(self):
@@ -110,6 +110,26 @@ class TestTransforms(unittest.TestCase):
             eliminate_qualify,
             "SELECT x FROM y QUALIFY ROW_NUMBER() OVER (PARTITION BY p)",
             "SELECT x FROM (SELECT x, ROW_NUMBER() OVER (PARTITION BY p) AS _w, p FROM y) AS _t WHERE _w",
+        )
+        self.validate(
+            eliminate_qualify,
+            "SELECT x AS z FROM y QUALIFY ROW_NUMBER() OVER (PARTITION BY z)",
+            "SELECT z FROM (SELECT x AS z, ROW_NUMBER() OVER (PARTITION BY x) AS _w, x FROM y) AS _t WHERE _w",
+        )
+        self.validate(
+            eliminate_qualify,
+            "SELECT SOME_UDF(x) AS z FROM y QUALIFY ROW_NUMBER() OVER (PARTITION BY x ORDER BY z)",
+            "SELECT z FROM (SELECT SOME_UDF(x) AS z, ROW_NUMBER() OVER (PARTITION BY x ORDER BY SOME_UDF(x)) AS _w, x FROM y) AS _t WHERE _w",
+        )
+        self.validate(
+            eliminate_qualify,
+            "SELECT x, t, x || t AS z FROM y QUALIFY ROW_NUMBER() OVER (PARTITION BY x ORDER BY z DESC)",
+            "SELECT x, t, z FROM (SELECT x, t, x || t AS z, ROW_NUMBER() OVER (PARTITION BY x ORDER BY x || t DESC) AS _w FROM y) AS _t WHERE _w",
+        )
+        self.validate(
+            eliminate_qualify,
+            "SELECT y.x AS x, y.t AS z FROM y QUALIFY ROW_NUMBER() OVER (PARTITION BY x ORDER BY x DESC, z)",
+            "SELECT x, z FROM (SELECT y.x AS x, y.t AS z, ROW_NUMBER() OVER (PARTITION BY y.x ORDER BY y.x DESC, y.t) AS _w, y.t FROM y) AS _t WHERE _w",
         )
 
     def test_remove_precision_parameterized_types(self):

@@ -14,9 +14,33 @@ SELECT 1 FROM x.y.z AS z;
 SELECT 1 FROM x.y.z AS z;
 SELECT 1 FROM x.y.z AS z;
 
-# title: cte can't be qualified
+# title: redshift unnest syntax, z.a should be a column, not a table
+# dialect: redshift
+SELECT 1 FROM y.z AS z, z.a;
+SELECT 1 FROM c.y.z AS z, z.a;
+
+# title: bigquery implicit unnest syntax, coordinates.position should be a column, not a table
+# dialect: bigquery
+SELECT results FROM Coordinates, coordinates.position AS results;
+SELECT results FROM c.db.Coordinates AS Coordinates, UNNEST(coordinates.position) AS results;
+
+# title: bigquery implicit unnest syntax, table is already qualified
+# dialect: bigquery
+SELECT results FROM db.coordinates, Coordinates.position AS results;
+SELECT results FROM c.db.coordinates AS coordinates, UNNEST(Coordinates.position) AS results;
+
+# title: bigquery schema name clashes with CTE name - this is a join, not an implicit unnest
+# dialect: bigquery
+WITH Coordinates AS (SELECT [1, 2] AS position) SELECT results FROM Coordinates, `Coordinates.position` AS results;
+WITH Coordinates AS (SELECT [1, 2] AS position) SELECT results FROM Coordinates AS Coordinates, `c.Coordinates.position` AS results;
+
+# title: single cte
 WITH a AS (SELECT 1 FROM z) SELECT 1 FROM a;
-WITH a AS (SELECT 1 FROM c.db.z AS z) SELECT 1 FROM a;
+WITH a AS (SELECT 1 FROM c.db.z AS z) SELECT 1 FROM a AS a;
+
+# title: two ctes that are self-joined
+WITH a AS (SELECT 1 FROM z) SELECT 1 FROM a CROSS JOIN a;
+WITH a AS (SELECT 1 FROM c.db.z AS z) SELECT 1 FROM a AS a CROSS JOIN a AS a;
 
 # title: query that yields a single column as projection
 SELECT (SELECT y.c FROM y AS y) FROM x;
@@ -25,6 +49,10 @@ SELECT (SELECT y.c FROM c.db.y AS y) FROM c.db.x AS x;
 # title: pivoted table
 SELECT * FROM x PIVOT (SUM(a) FOR b IN ('a', 'b'));
 SELECT * FROM c.db.x AS x PIVOT(SUM(a) FOR b IN ('a', 'b')) AS _q_0;
+
+# title: pivoted table, pivot has alias
+SELECT * FROM x PIVOT (SUM(a) FOR b IN ('a', 'b')) AS piv;
+SELECT * FROM c.db.x AS x PIVOT(SUM(a) FOR b IN ('a', 'b')) AS piv;
 
 # title: wrapped table without alias
 SELECT * FROM (tbl);
@@ -70,7 +98,7 @@ SELECT * FROM ((c.db.a AS foo CROSS JOIN c.db.b AS bar) CROSS JOIN c.db.c AS baz
 SELECT * FROM (tbl1 CROSS JOIN (SELECT * FROM tbl2) AS t1);
 SELECT * FROM (c.db.tbl1 AS tbl1 CROSS JOIN (SELECT * FROM c.db.tbl2 AS tbl2) AS t1);
 
-# title: wrapped join with subquery with alias, parentheses can't be omitted because of alias
+# title: wrapped join with subquery with alias, parentheses cant be omitted because of alias
 SELECT * FROM (tbl1 CROSS JOIN (SELECT * FROM tbl2) AS t1) AS t2;
 SELECT * FROM (SELECT * FROM c.db.tbl1 AS tbl1 CROSS JOIN (SELECT * FROM c.db.tbl2 AS tbl2) AS t1) AS t2;
 
@@ -82,7 +110,7 @@ SELECT * FROM c.db.a AS a LEFT JOIN (c.db.b AS b INNER JOIN c.db.c AS c ON c.id 
 SELECT * FROM a LEFT JOIN b INNER JOIN c ON c.id = b.id ON b.id = a.id;
 SELECT * FROM c.db.a AS a LEFT JOIN c.db.b AS b INNER JOIN c.db.c AS c ON c.id = b.id ON b.id = a.id;
 
-# title: parentheses can't be omitted because alias shadows inner table names
+# title: parentheses cant be omitted because alias shadows inner table names
 SELECT t.a FROM (tbl AS tbl) AS t;
 SELECT t.a FROM (SELECT * FROM c.db.tbl AS tbl) AS t;
 
@@ -109,3 +137,43 @@ SELECT * FROM ((SELECT * FROM c.db.t AS t) AS _q_0);
 # title: wrapped subquery without alias joined with a table
 SELECT * FROM ((SELECT * FROM t1) INNER JOIN t2 ON a = b);
 SELECT * FROM ((SELECT * FROM c.db.t1 AS t1) AS _q_0 INNER JOIN c.db.t2 AS t2 ON a = b);
+
+# title: lateral unnest with alias
+SELECT x FROM t, LATERAL UNNEST(t.xs) AS x;
+SELECT x FROM c.db.t AS t, LATERAL UNNEST(t.xs) AS x;
+
+# title: lateral unnest without alias
+SELECT x FROM t, LATERAL UNNEST(t.xs);
+SELECT x FROM c.db.t AS t, LATERAL UNNEST(t.xs) AS _q_0;
+
+# title: table with ordinality
+SELECT * FROM t CROSS JOIN JSON_ARRAY_ELEMENTS(t.response) WITH ORDINALITY AS kv_json;
+SELECT * FROM c.db.t AS t CROSS JOIN JSON_ARRAY_ELEMENTS(t.response) WITH ORDINALITY AS kv_json;
+
+# title: alter table
+ALTER TABLE t ADD PRIMARY KEY (id) NOT ENFORCED;
+ALTER TABLE c.db.t ADD PRIMARY KEY (id) NOT ENFORCED;
+
+# title: create statement with cte
+CREATE TABLE t1 AS (WITH cte AS (SELECT x FROM t2) SELECT * FROM cte);
+CREATE TABLE c.db.t1 AS (WITH cte AS (SELECT x FROM c.db.t2 AS t2) SELECT * FROM cte AS cte);
+
+# title: delete statement
+DELETE FROM t1 WHERE NOT c IN (SELECT c FROM t2);
+DELETE FROM c.db.t1 WHERE NOT c IN (SELECT c FROM c.db.t2 AS t2);
+
+# title: insert statement with cte
+# dialect: spark
+WITH cte AS (SELECT b FROM y) INSERT INTO s SELECT * FROM cte;
+WITH cte AS (SELECT b FROM c.db.y AS y) INSERT INTO c.db.s SELECT * FROM cte AS cte;
+
+# title: qualify wrapped query
+(SELECT x FROM t);
+(SELECT x FROM c.db.t AS t);
+
+# title: replace columns with db/catalog refs
+SELECT db1.a.id, db2.a.id FROM db1.a JOIN db2.a ON db1.a.id = db2.a.id;
+SELECT a.id, a_2.id FROM c.db1.a AS a JOIN c.db2.a AS a_2 ON a.id = a_2.id;
+
+SELECT cat.db1.a.id, db2.a.id FROM cat.db1.a JOIN db2.a ON cat.db1.a.id = db2.a.id;
+SELECT a.id, a_2.id FROM cat.db1.a AS a JOIN c.db2.a AS a_2 ON a.id = a_2.id;

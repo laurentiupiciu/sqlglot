@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from sqlglot import exp, generator, parser, transforms
+from sqlglot import exp, generator, parser, tokens, transforms
 from sqlglot.dialects.dialect import Dialect, rename_func
 
 
 class Tableau(Dialect):
+    LOG_BASE_FIRST = False
+
+    class Tokenizer(tokens.Tokenizer):
+        IDENTIFIERS = [("[", "]")]
+        QUOTES = ["'", '"']
+
     class Generator(generator.Generator):
         JOIN_HINTS = False
         TABLE_HINTS = False
@@ -30,11 +36,12 @@ class Tableau(Dialect):
         def count_sql(self, expression: exp.Count) -> str:
             this = expression.this
             if isinstance(this, exp.Distinct):
-                return f"COUNTD({self.expressions(this, flat=True)})"
-            return f"COUNT({self.sql(expression, 'this')})"
+                return self.func("COUNTD", *this.expressions)
+            return self.func("COUNT", this)
 
     class Parser(parser.Parser):
         FUNCTIONS = {
             **parser.Parser.FUNCTIONS,
             "COUNTD": lambda args: exp.Count(this=exp.Distinct(expressions=args)),
         }
+        NO_PAREN_IF_COMMANDS = False

@@ -4,6 +4,8 @@ from unittest import mock
 
 from sqlglot import parse_one, transpile
 from sqlglot.errors import ErrorLevel, ParseError, UnsupportedError
+from sqlglot.helper import logger as helper_logger
+from sqlglot.parser import logger as parser_logger
 from tests.helpers import (
     assert_logger_contains,
     load_sql_fixture_pairs,
@@ -18,6 +20,9 @@ class TestTranspile(unittest.TestCase):
 
     def validate(self, sql, target, **kwargs):
         self.assertEqual(transpile(sql, **kwargs)[0], target)
+
+    def test_weird_chars(self):
+        self.assertEqual(transpile("0Êß")[0], "0 AS Êß")
 
     def test_alias(self):
         self.assertEqual(transpile("SELECT SUM(y) KEEP")[0], "SELECT SUM(y) AS KEEP")
@@ -44,9 +49,6 @@ class TestTranspile(unittest.TestCase):
                 with self.assertRaises(ParseError):
                     self.validate(f"SELECT x {key}", "")
 
-    def test_asc(self):
-        self.validate("SELECT x FROM y ORDER BY x ASC", "SELECT x FROM y ORDER BY x")
-
     def test_unary(self):
         self.validate("+++1", "1")
         self.validate("+-1", "-1")
@@ -60,19 +62,37 @@ class TestTranspile(unittest.TestCase):
     def test_some(self):
         self.validate(
             "SELECT * FROM x WHERE a = SOME (SELECT 1)",
-            "SELECT * FROM x WHERE a = ANY (SELECT 1)",
+            "SELECT * FROM x WHERE a = ANY(SELECT 1)",
         )
 
     def test_leading_comma(self):
         self.validate(
+            "SELECT a, b, c FROM (SELECT a, b, c FROM t)",
+            "SELECT\n"
+            "    a\n"
+            "    , b\n"
+            "    , c\n"
+            "FROM (\n"
+            "    SELECT\n"
+            "        a\n"
+            "        , b\n"
+            "        , c\n"
+            "    FROM t\n"
+            ")",
+            leading_comma=True,
+            pretty=True,
+            pad=4,
+            indent=4,
+        )
+        self.validate(
             "SELECT FOO, BAR, BAZ",
-            "SELECT\n    FOO\n  , BAR\n  , BAZ",
+            "SELECT\n  FOO\n  , BAR\n  , BAZ",
             leading_comma=True,
             pretty=True,
         )
         self.validate(
             "SELECT FOO, /*x*/\nBAR, /*y*/\nBAZ",
-            "SELECT\n    FOO /* x */\n  , BAR /* y */\n  , BAZ",
+            "SELECT\n  FOO /* x */\n  , BAR /* y */\n  , BAZ",
             leading_comma=True,
             pretty=True,
         )
@@ -88,8 +108,45 @@ class TestTranspile(unittest.TestCase):
         self.validate("SELECT MIN(3)>=MIN(2)", "SELECT MIN(3) >= MIN(2)")
         self.validate("SELECT 1>0", "SELECT 1 > 0")
         self.validate("SELECT 3>=3", "SELECT 3 >= 3")
+        self.validate("SELECT a\r\nFROM b", "SELECT a FROM b")
 
     def test_comments(self):
+        self.validate(
+            "SELECT c /* foo */ AS alias",
+            "SELECT c AS alias /* foo */",
+        )
+        self.validate(
+            "SELECT c AS /* foo */ (a, b, c) FROM t",
+            "SELECT c AS (a, b, c) /* foo */ FROM t",
+        )
+        self.validate(
+            "SELECT * FROM t1\n/*x*/\nUNION ALL SELECT * FROM t2",
+            "SELECT * FROM t1 /* x */ UNION ALL SELECT * FROM t2",
+        )
+        self.validate(
+            "/* comment */ SELECT * FROM a UNION SELECT * FROM b",
+            "/* comment */ SELECT * FROM a UNION SELECT * FROM b",
+        )
+        self.validate(
+            "SELECT * FROM t1\n/*x*/\nINTERSECT ALL SELECT * FROM t2",
+            "SELECT * FROM t1 /* x */ INTERSECT ALL SELECT * FROM t2",
+        )
+        self.validate(
+            "SELECT\n  foo\n/* comments */\n;",
+            "SELECT foo /* comments */",
+        )
+        self.validate(
+            "SELECT * FROM a INNER /* comments */ JOIN b",
+            "SELECT * FROM a /* comments */ INNER JOIN b",
+        )
+        self.validate(
+            "SELECT * FROM a LEFT /* comment 1 */ OUTER /* comment 2 */ JOIN b",
+            "SELECT * FROM a /* comment 1 */ /* comment 2 */ LEFT OUTER JOIN b",
+        )
+        self.validate(
+            "SELECT CASE /* test */ WHEN a THEN b ELSE c END",
+            "SELECT CASE WHEN a THEN b ELSE c END /* test */",
+        )
         self.validate("SELECT 1 /*/2 */", "SELECT 1 /* /2 */")
         self.validate("SELECT */*comment*/", "SELECT * /* comment */")
         self.validate(
@@ -146,9 +203,7 @@ SELECT * FROM foo
 -- comment 2
 -- comment 3
 SELECT * FROM foo""",
-            """/* comment 1 */
-/* comment 2 */
-/* comment 3 */
+            """/* comment 1 */ /* comment 2 */ /* comment 3 */
 SELECT
   *
 FROM foo""",
@@ -172,8 +227,7 @@ line3*/ /*another comment*/ where 1=1 -- comment at the end""",
   *
 FROM tbl /* line1
 line2
-line3 */
-/* another comment */
+line3 */ /* another comment */
 WHERE
   1 = 1 /* comment at the end */""",
             pretty=True,
@@ -243,7 +297,7 @@ FROM bar /* comment 5 */, tbl /*          comment 6 */""",
 FROM b
 /* where */
 WHERE
-  foo /* comment 1 */ AND bar AND bla /* comment 2 */""",
+  foo AND /* comment 1 */ bar AND /* comment 2 */ bla""",
             pretty=True,
         )
         self.validate(
@@ -300,14 +354,13 @@ FROM v""",
             -- comment3
             DROP TABLE IF EXISTS db.tba
             """,
-            """/* comment1 */
-/* comment2 */
-/* comment3 */
+            """/* comment1 */ /* comment2 */ /* comment3 */
 DROP TABLE IF EXISTS db.tba""",
             pretty=True,
         )
         self.validate(
             """
+            -- comment4
             CREATE TABLE db.tba AS
             SELECT a, b, c
             FROM tb_01
@@ -316,17 +369,185 @@ DROP TABLE IF EXISTS db.tba""",
               a = 1 AND b = 2 --comment6
               -- and c = 1
             -- comment7
+            ;
             """,
-            """CREATE TABLE db.tba AS
+            """/* comment4 */
+CREATE TABLE db.tba AS
 SELECT
   a,
   b,
   c
 FROM tb_01
 WHERE
-  a /* comment5 */ = 1 AND b = 2 /* comment6 */
-  /* and c = 1 */
-  /* comment7 */""",
+  a /* comment5 */ = 1 AND b = 2 /* comment6 */ /* and c = 1 */ /* comment7 */""",
+            pretty=True,
+        )
+        self.validate(
+            """
+            SELECT
+               -- This is testing comments
+                col,
+            -- 2nd testing comments
+            CASE WHEN a THEN b ELSE c END as d
+            FROM t
+            """,
+            """SELECT
+  col, /* This is testing comments */
+  CASE WHEN a THEN b ELSE c END AS d /* 2nd testing comments */
+FROM t""",
+            pretty=True,
+        )
+        self.validate(
+            """
+            SELECT * FROM a
+            -- comments
+            INNER JOIN b
+            """,
+            """SELECT
+  *
+FROM a
+/* comments */
+INNER JOIN b""",
+            pretty=True,
+        )
+        self.validate(
+            "SELECT * FROM a LEFT /* comment 1 */ OUTER /* comment 2 */ JOIN b",
+            """SELECT
+  *
+FROM a
+/* comment 1 */ /* comment 2 */
+LEFT OUTER JOIN b""",
+            pretty=True,
+        )
+        self.validate(
+            "SELECT\n  a /* sqlglot.meta case_sensitive */ -- noqa\nFROM tbl",
+            """SELECT
+  a /* sqlglot.meta case_sensitive */ /* noqa */
+FROM tbl""",
+            pretty=True,
+        )
+        self.validate(
+            """
+SELECT
+  'hotel1' AS hotel,
+  *
+FROM dw_1_dw_1_1.exactonline_1.transactionlines
+/*
+    UNION ALL
+    SELECT
+      'Thon Partner Hotel Jølster' AS hotel,
+      name,
+      date,
+      CAST(identifier AS VARCHAR) AS identifier,
+      value
+    FROM d2o_889_oupjr_1348.public.accountvalues_forecast
+*/
+UNION ALL
+SELECT
+  'hotel2' AS hotel,
+  *
+FROM dw_1_dw_1_1.exactonline_2.transactionlines""",
+            """SELECT
+  'hotel1' AS hotel,
+  *
+FROM dw_1_dw_1_1.exactonline_1.transactionlines
+/*
+    UNION ALL
+    SELECT
+      'Thon Partner Hotel Jølster' AS hotel,
+      name,
+      date,
+      CAST(identifier AS VARCHAR) AS identifier,
+      value
+    FROM d2o_889_oupjr_1348.public.accountvalues_forecast
+*/
+UNION ALL
+SELECT
+  'hotel2' AS hotel,
+  *
+FROM dw_1_dw_1_1.exactonline_2.transactionlines""",
+            pretty=True,
+        )
+        self.validate(
+            """/* The result of  some calculations
+ */
+with
+    base as (
+        select
+            sum(sb.hep_amount) as hep_amount,
+            -- I AM REMOVED
+            sum(sb.hep_budget)
+            /* Budget defined in sharepoint */
+            as blub
+            , 1 as bla
+        from gold.data_budget sb
+        group by all
+    )
+select
+    *
+from base
+""",
+            """/* The result of  some calculations
+ */
+WITH base AS (
+  SELECT
+    SUM(sb.hep_amount) AS hep_amount,
+    SUM(sb.hep_budget) /* I AM REMOVED */ AS blub, /* Budget defined in sharepoint */
+    1 AS bla
+  FROM gold.data_budget AS sb
+  GROUP BY ALL
+)
+SELECT
+  *
+FROM base""",
+            pretty=True,
+        )
+        self.validate(
+            """-- comment
+SOME_FUNC(arg IGNORE NULLS)
+  OVER (PARTITION BY foo ORDER BY bla) AS col""",
+            "SOME_FUNC(arg IGNORE NULLS) OVER (PARTITION BY foo ORDER BY bla) AS col /* comment */",
+            pretty=True,
+        )
+        self.validate(
+            """
+            SELECT *
+            FROM x
+            INNER JOIN y
+            -- inner join z
+            LEFT JOIN z using (id)
+            using (id)
+            """,
+            """SELECT
+  *
+FROM x
+INNER JOIN y
+  /* inner join z */
+  LEFT JOIN z
+    USING (id)
+  USING (id)""",
+            pretty=True,
+        )
+        self.validate(
+            """with x as (
+  SELECT *
+  /*
+NOTE: LEFT JOIN because blah blah blah
+  */
+  FROM a
+)
+select * from x""",
+            """WITH x AS (
+  SELECT
+    *
+  /*
+NOTE: LEFT JOIN because blah blah blah
+  */
+  FROM a
+)
+SELECT
+  *
+FROM x""",
             pretty=True,
         )
 
@@ -339,11 +560,13 @@ WHERE
         self.validate("x::INT y", "CAST(x AS INT) AS y")
         self.validate("x::INT AS y", "CAST(x AS INT) AS y")
         self.validate("x::INT::BOOLEAN", "CAST(CAST(x AS INT) AS BOOLEAN)")
+        self.validate("interval::int", "CAST(interval AS INT)")
+        self.validate("x::user_defined_type", "CAST(x AS user_defined_type)")
         self.validate("CAST(x::INT AS BOOLEAN)", "CAST(CAST(x AS INT) AS BOOLEAN)")
         self.validate("CAST(x AS INT)::BOOLEAN", "CAST(CAST(x AS INT) AS BOOLEAN)")
 
         with self.assertRaises(ParseError):
-            transpile("x::z")
+            transpile("x::z", read="duckdb")
 
     def test_not_range(self):
         self.validate("a NOT LIKE b", "NOT a LIKE b")
@@ -402,11 +625,12 @@ WHERE
         self.validate(
             "WITH A(filter) AS (VALUES 1, 2, 3) SELECT * FROM A WHERE filter >= 2",
             "WITH A(filter) AS (VALUES (1), (2), (3)) SELECT * FROM A WHERE filter >= 2",
+            read="presto",
         )
         self.validate(
             "SELECT BOOL_OR(a > 10) FROM (VALUES 1, 2, 15) AS T(a)",
             "SELECT BOOL_OR(a > 10) FROM (VALUES (1), (2), (15)) AS T(a)",
-            write="presto",
+            read="presto",
         )
 
     def test_alter(self):
@@ -415,20 +639,20 @@ WHERE
             "ALTER TABLE integers ADD COLUMN k INT",
         )
         self.validate(
-            "ALTER TABLE integers ALTER i SET DATA TYPE VARCHAR",
-            "ALTER TABLE integers ALTER COLUMN i TYPE VARCHAR",
+            "ALTER TABLE integers ALTER i TYPE VARCHAR",
+            "ALTER TABLE integers ALTER COLUMN i SET DATA TYPE VARCHAR",
         )
         self.validate(
             "ALTER TABLE integers ALTER i TYPE VARCHAR COLLATE foo USING bar",
-            "ALTER TABLE integers ALTER COLUMN i TYPE VARCHAR COLLATE foo USING bar",
+            "ALTER TABLE integers ALTER COLUMN i SET DATA TYPE VARCHAR COLLATE foo USING bar",
         )
 
     def test_time(self):
-        self.validate("INTERVAL '1 day'", "INTERVAL '1' day")
-        self.validate("INTERVAL '1 days' * 5", "INTERVAL '1' days * 5")
-        self.validate("5 * INTERVAL '1 day'", "5 * INTERVAL '1' day")
-        self.validate("INTERVAL 1 day", "INTERVAL '1' day")
-        self.validate("INTERVAL 2 months", "INTERVAL '2' months")
+        self.validate("INTERVAL '1 day'", "INTERVAL '1' DAY")
+        self.validate("INTERVAL '1 days' * 5", "INTERVAL '1' DAYS * 5")
+        self.validate("5 * INTERVAL '1 day'", "5 * INTERVAL '1' DAY")
+        self.validate("INTERVAL 1 day", "INTERVAL '1' DAY")
+        self.validate("INTERVAL 2 months", "INTERVAL '2' MONTHS")
         self.validate("TIMESTAMP '2020-01-01'", "CAST('2020-01-01' AS TIMESTAMP)")
         self.validate("TIMESTAMP WITH TIME ZONE '2020-01-01'", "CAST('2020-01-01' AS TIMESTAMPTZ)")
         self.validate(
@@ -523,7 +747,11 @@ WHERE
         )
 
         self.validate("STR_TO_TIME('x', 'y')", "DATE_PARSE('x', 'y')", write="presto")
-        self.validate("STR_TO_UNIX('x', 'y')", "TO_UNIXTIME(DATE_PARSE('x', 'y'))", write="presto")
+        self.validate(
+            "STR_TO_UNIX('x', 'y')",
+            "TO_UNIXTIME(COALESCE(TRY(DATE_PARSE(CAST('x' AS VARCHAR), 'y')), PARSE_DATETIME(CAST('x' AS VARCHAR), 'y')))",
+            write="presto",
+        )
         self.validate("TIME_TO_STR(x, 'y')", "DATE_FORMAT(x, 'y')", write="presto")
         self.validate("TIME_TO_UNIX(x)", "TO_UNIXTIME(x)", write="presto")
         self.validate(
@@ -551,22 +779,33 @@ WHERE
         self.validate(
             "CREATE TEMPORARY TABLE test AS SELECT 1",
             "CREATE TEMPORARY VIEW test AS SELECT 1",
-            write="spark",
+            write="spark2",
         )
 
-    @mock.patch("sqlglot.helper.logger")
-    def test_index_offset(self, logger):
-        self.validate("x[0]", "x[1]", write="presto", identity=False)
-        self.validate("x[1]", "x[0]", read="presto", identity=False)
-        logger.warning.assert_any_call("Applying array index offset (%s)", 1)
-        logger.warning.assert_any_call("Applying array index offset (%s)", -1)
+    def test_index_offset(self):
+        with self.assertLogs(helper_logger) as cm:
+            self.validate("x[0]", "x[1]", write="presto", identity=False)
+            self.validate("x[1]", "x[0]", read="presto", identity=False)
 
-        self.validate("x[x - 1]", "x[x - 1]", write="presto", identity=False)
-        self.validate(
-            "x[array_size(y) - 1]", "x[CARDINALITY(y) - 1 + 1]", write="presto", identity=False
-        )
-        self.validate("x[3 - 1]", "x[3]", write="presto", identity=False)
-        self.validate("MAP(a, b)[0]", "MAP(a, b)[0]", write="presto", identity=False)
+            self.validate("x[x - 1]", "x[x - 1]", write="presto", identity=False)
+            self.validate(
+                "x[array_size(y) - 1]",
+                "x[(CARDINALITY(y) - 1) + 1]",
+                write="presto",
+                identity=False,
+            )
+            self.validate("x[3 - 1]", "x[3]", write="presto", identity=False)
+            self.validate("MAP(a, b)[0]", "MAP(a, b)[0]", write="presto", identity=False)
+
+            self.assertEqual(
+                cm.output,
+                [
+                    "WARNING:sqlglot:Applying array index offset (1)",
+                    "WARNING:sqlglot:Applying array index offset (-1)",
+                    "WARNING:sqlglot:Applying array index offset (1)",
+                    "WARNING:sqlglot:Applying array index offset (1)",
+                ],
+            )
 
     def test_identify_lambda(self):
         self.validate("x(y -> y)", 'X("y" -> "y")', identify=True)
@@ -576,6 +815,42 @@ WHERE
         for sql in load_sql_fixtures("identity.sql"):
             with self.subTest(sql):
                 self.assertEqual(transpile(sql)[0], sql.strip())
+
+    def test_command_identity(self):
+        for sql in (
+            "ALTER AGGREGATE bla(foo) OWNER TO CURRENT_USER",
+            "ALTER DOMAIN foo VALIDATE CONSTRAINT bla",
+            "ALTER ROLE CURRENT_USER WITH REPLICATION",
+            "ALTER RULE foo ON bla RENAME TO baz",
+            "ALTER SEQUENCE IF EXISTS baz RESTART WITH boo",
+            "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS=3",
+            "ALTER TABLE integers DROP PRIMARY KEY",
+            "ALTER TABLE table1 MODIFY COLUMN name1 SET TAG foo='bar'",
+            "ALTER TABLE table1 RENAME COLUMN c1 AS c2",
+            "ALTER TABLE table1 RENAME COLUMN c1 TO c2, c2 TO c3",
+            "ALTER TABLE table1 RENAME COLUMN c1 c2",
+            "ALTER TYPE electronic_mail RENAME TO email",
+            "ALTER VIEW foo ALTER COLUMN bla SET DEFAULT 'NOT SET'",
+            "ALTER schema doo",
+            "ANALYZE a.y",
+            "CALL catalog.system.iceberg_procedure_name(named_arg_1 => 'arg_1', named_arg_2 => 'arg_2')",
+            "COMMENT ON ACCESS METHOD gin IS 'GIN index access method'",
+            "CREATE OR REPLACE STAGE",
+            "EXECUTE statement",
+            "EXPLAIN SELECT * FROM x",
+            "GRANT INSERT ON foo TO bla",
+            "LOAD foo",
+            "OPTIMIZE TABLE y",
+            "PREPARE statement",
+            "SET -v",
+            "SET @user OFF",
+            "SHOW TABLES",
+            "VACUUM FREEZE my_table",
+        ):
+            with self.subTest(sql):
+                with self.assertLogs(parser_logger) as cm:
+                    self.assertEqual(transpile(sql)[0], sql)
+                    assert f"'{sql[:100]}' contains unsupported syntax" in cm.output[0]
 
     def test_normalize_name(self):
         self.assertEqual(
@@ -599,6 +874,10 @@ WHERE
 
     def test_pretty_line_breaks(self):
         self.assertEqual(transpile("SELECT '1\n2'", pretty=True)[0], "SELECT\n  '1\n2'")
+        self.assertEqual(
+            transpile("SELECT '1\n2'", pretty=True, unsupported_level=ErrorLevel.IGNORE)[0],
+            "SELECT\n  '1\n2'",
+        )
 
     @mock.patch("sqlglot.parser.logger")
     def test_error_level(self, logger):
@@ -702,3 +981,8 @@ WHERE
         with self.assertRaises(UnsupportedError) as ctx:
             unsupported(ErrorLevel.IMMEDIATE)
         self.assertEqual(str(ctx.exception).count(error), 1)
+
+    def test_recursion(self):
+        sql = "1 AND 2 OR 3 AND " * 1000
+        sql += "4"
+        self.assertEqual(len(parse_one(sql).sql()), 17001)

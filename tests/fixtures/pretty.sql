@@ -336,8 +336,8 @@ SELECT * /* multi
    comment */;
 SELECT
   * /* multi
-     line
-     comment */;
+   line
+   comment */;
 WITH table_data AS (
     SELECT 'bob' AS name, ARRAY['banana', 'apple', 'orange'] AS fruit_basket
 )
@@ -346,7 +346,7 @@ SELECT
     fruit,
     basket_index
 FROM table_data
-CROSS JOIN UNNEST(fruit_basket) AS fruit WITH OFFSET basket_index;
+CROSS JOIN UNNEST(fruit_basket) WITH ORDINALITY AS fruit(basket_index);
 WITH table_data AS (
   SELECT
     'bob' AS name,
@@ -357,11 +357,12 @@ SELECT
   fruit,
   basket_index
 FROM table_data
-CROSS JOIN UNNEST(fruit_basket) AS fruit WITH OFFSET AS basket_index;
+CROSS JOIN UNNEST(fruit_basket) WITH ORDINALITY AS fruit(basket_index);
 SELECT A.* EXCEPT A.COL_1, A.COL_2 FROM TABLE_1 A;
 SELECT
   A.*
-  EXCEPT (A.COL_1, A.COL_2)
+  EXCEPT (A.COL_1),
+  A.COL_2
 FROM TABLE_1 AS A;
 
 SELECT *
@@ -383,3 +384,14 @@ JOIN b
 CROSS JOIN d
 JOIN e
   ON d.id = e.id;
+
+SELECT * FROM a JOIN b JOIN c USING (e) JOIN d USING (f) USING (g);
+SELECT
+  *
+FROM a
+JOIN b
+  JOIN c
+    USING (e)
+  JOIN d
+    USING (f)
+  USING (g);

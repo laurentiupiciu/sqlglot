@@ -86,20 +86,20 @@ SELECT * FROM (SELECT * FROM (SELECT * FROM x)) ORDER BY a LIMIT 1;
 SELECT x.a AS a, x.b AS b FROM x AS x ORDER BY x.a LIMIT 1;
 
 # title: CTE
-WITH x AS (SELECT a, b FROM x) SELECT a, b FROM x;
-SELECT x.a AS a, x.b AS b FROM x AS x;
+WITH x AS (SELECT a, b FROM main.x) SELECT a, b FROM x;
+SELECT x.a AS a, x.b AS b FROM main.x AS x;
 
 # title: CTE with outer table alias
 WITH y AS (SELECT a, b FROM x) SELECT a, b FROM y AS z;
 SELECT x.a AS a, x.b AS b FROM x AS x;
 
 # title: Nested CTE
-WITH x2 AS (SELECT a FROM x), x3 AS (SELECT a FROM x2) SELECT a FROM x3;
-SELECT x.a AS a FROM x AS x;
+WITH x2 AS (SELECT a FROM main.x), x3 AS (SELECT a FROM x2) SELECT a FROM x3;
+SELECT x.a AS a FROM main.x AS x;
 
 # title: CTE WHERE clause is merged
-WITH x AS (SELECT a, b FROM x WHERE a > 1) SELECT a, SUM(b) AS b FROM x GROUP BY a;
-SELECT x.a AS a, SUM(x.b) AS b FROM x AS x WHERE x.a > 1 GROUP BY x.a;
+WITH x AS (SELECT a, b FROM main.x WHERE a > 1) SELECT a, SUM(b) AS b FROM x GROUP BY a;
+SELECT x.a AS a, SUM(x.b) AS b FROM main.x AS x WHERE x.a > 1 GROUP BY x.a;
 
 # title: CTE Outer query has join
 WITH x2 AS (SELECT a, b FROM x WHERE a > 1) SELECT a, c FROM x2 AS x JOIN y ON x.b = y.b;
@@ -110,8 +110,8 @@ WITH y AS (SELECT a, b FROM x AS q) SELECT a, b FROM y AS z;
 SELECT q.a AS a, q.b AS b FROM x AS q;
 
 # title: Nested CTE
-SELECT * FROM (WITH x AS (SELECT a, b FROM x) SELECT a, b FROM x);
-SELECT x.a AS a, x.b AS b FROM x AS x;
+SELECT * FROM (WITH x AS (SELECT a, b FROM main.x) SELECT a, b FROM x);
+SELECT x.a AS a, x.b AS b FROM main.x AS x;
 
 # title: Inner select is an expression
 SELECT a FROM (SELECT a FROM (SELECT COALESCE(a) AS a FROM x LEFT JOIN y ON x.a = y.b) AS x) AS x;
@@ -218,6 +218,7 @@ with t1 as (
     ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) as row_num
   FROM
     x
+  ORDER BY x.a, x.b, row_num
 )
 SELECT
   t1.a,
@@ -226,7 +227,7 @@ FROM
   t1
 WHERE
   row_num = 1;
-WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.a AS a, t1.b AS b FROM t1 WHERE t1.row_num = 1;
+WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x ORDER BY x.a, x.b, row_num) SELECT t1.a AS a, t1.b AS b FROM t1 AS t1 WHERE t1.row_num = 1;
 
 # title: Test preventing merge of window expressions join clause
 with t1 as (
@@ -241,7 +242,7 @@ SELECT
   t1.a,
   t1.b
 FROM t1 JOIN y ON t1.a = y.c AND t1.row_num = 1;
-WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.a AS a, t1.b AS b FROM t1 JOIN y AS y ON t1.a = y.c AND t1.row_num = 1;
+WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.a AS a, t1.b AS b FROM t1 AS t1 JOIN y AS y ON t1.a = y.c AND t1.row_num = 1;
 
 # title: Test preventing merge of window expressions agg function
 with t1 as (
@@ -256,7 +257,7 @@ SELECT
   SUM(t1.row_num) as total_rows
 FROM
   t1;
-WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT SUM(t1.row_num) AS total_rows FROM t1;
+WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT SUM(t1.row_num) AS total_rows FROM t1 AS t1;
 
 # title: Test prevent merging of window if in group by func
 with t1 as (
@@ -274,7 +275,7 @@ FROM
   t1
 GROUP BY t1.row_num
 ORDER BY t1.row_num;
-WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.row_num AS row_num, SUM(t1.a) AS total FROM t1 GROUP BY t1.row_num ORDER BY row_num;
+WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.row_num AS row_num, SUM(t1.a) AS total FROM t1 AS t1 GROUP BY t1.row_num ORDER BY row_num;
 
 # title: Test prevent merging of window if in order by func
 with t1 as (
@@ -291,7 +292,7 @@ SELECT
 FROM
   t1
 ORDER BY t1.row_num, t1.a;
-WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.row_num AS row_num, t1.a AS a FROM t1 ORDER BY t1.row_num, t1.a;
+WITH t1 AS (SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t1.row_num AS row_num, t1.a AS a FROM t1 AS t1 ORDER BY t1.row_num, t1.a;
 
 # title: Test allow merging of window function
 with t1 as (
@@ -301,6 +302,7 @@ with t1 as (
     ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) as row_num
   FROM
     x
+  ORDER BY x.a, x.b, row_num
 )
 SELECT
   t1.a,
@@ -308,7 +310,22 @@ SELECT
   t1.row_num
 FROM
   t1;
-SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x;
+SELECT x.a AS a, x.b AS b, ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x ORDER BY x.a, x.b, row_num;
+
+# title: Don't merge window functions, inner table is aliased in outer query
+with t1 as (
+  SELECT
+    ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) as row_num
+  FROM
+    x
+)
+SELECT
+  t2.row_num
+FROM
+  t1 AS t2
+WHERE
+  t2.row_num = 2;
+WITH t1 AS (SELECT ROW_NUMBER() OVER (PARTITION BY x.a ORDER BY x.a) AS row_num FROM x AS x) SELECT t2.row_num AS row_num FROM t1 AS t2 WHERE t2.row_num = 2;
 
 # title: Values Test
 # dialect: spark
@@ -396,3 +413,36 @@ FROM (
       ON _q_0.a = y.b
 );
 SELECT y.b AS b FROM (x AS x JOIN y AS y ON x.a = y.b);
+
+# title: merge cte into subquery with overlapping alias
+WITH q AS (
+  SELECT
+    y.b AS a
+  FROM y AS y
+)
+SELECT
+  q.a AS a
+FROM x AS q
+WHERE
+  q.a IN (
+    SELECT
+      q.a AS a
+    FROM q AS q
+  );
+SELECT q.a AS a FROM x AS q WHERE q.a IN (SELECT y.b AS a FROM y AS y);
+
+# title: dont merge when inner query has ORDER BY and outer query is UNION
+WITH q AS (
+  SELECT
+    x.a AS a
+  FROM x
+  ORDER BY x.a
+)
+SELECT
+  q.a AS a
+FROM q
+UNION ALL
+SELECT
+  1 AS a;
+WITH q AS (SELECT x.a AS a FROM x AS x ORDER BY x.a) SELECT q.a AS a FROM q AS q UNION ALL SELECT 1 AS a;
+

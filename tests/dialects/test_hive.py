@@ -152,7 +152,7 @@ class TestHive(Validator):
                 "duckdb": "CREATE TABLE x (w TEXT)",  # Partition columns should exist in table
                 "presto": "CREATE TABLE x (w VARCHAR, y INTEGER, z INTEGER) WITH (PARTITIONED_BY=ARRAY['y', 'z'])",
                 "hive": "CREATE TABLE x (w STRING) PARTITIONED BY (y INT, z INT)",
-                "spark": "CREATE TABLE x (w STRING) PARTITIONED BY (y INT, z INT)",
+                "spark": "CREATE TABLE x (w STRING, y INT, z INT) PARTITIONED BY (y, z)",
             },
         )
         self.validate_all(
@@ -235,15 +235,18 @@ class TestHive(Validator):
             },
         )
         self.validate_all(
-            "'\\\\a'",
+            "'\\\\\\\\a'",
             read={
+                "drill": "'\\\\\\\\a'",
+                "duckdb": "'\\\\a'",
                 "presto": "'\\\\a'",
             },
             write={
+                "drill": "'\\\\\\\\a'",
                 "duckdb": "'\\\\a'",
+                "hive": "'\\\\\\\\a'",
                 "presto": "'\\\\a'",
-                "hive": "'\\\\a'",
-                "spark": "'\\\\a'",
+                "spark": "'\\\\\\\\a'",
             },
         )
 
@@ -296,11 +299,11 @@ class TestHive(Validator):
         self.validate_all(
             "DATEDIFF(a, b)",
             write={
-                "duckdb": "DATE_DIFF('day', CAST(b AS DATE), CAST(a AS DATE))",
-                "presto": "DATE_DIFF('day', CAST(CAST(b AS TIMESTAMP) AS DATE), CAST(CAST(a AS TIMESTAMP) AS DATE))",
+                "duckdb": "DATE_DIFF('DAY', CAST(b AS DATE), CAST(a AS DATE))",
+                "presto": "DATE_DIFF('DAY', CAST(CAST(b AS TIMESTAMP) AS DATE), CAST(CAST(a AS TIMESTAMP) AS DATE))",
                 "hive": "DATEDIFF(TO_DATE(a), TO_DATE(b))",
                 "spark": "DATEDIFF(TO_DATE(a), TO_DATE(b))",
-                "": "DATEDIFF(TS_OR_DS_TO_DATE(a), TS_OR_DS_TO_DATE(b))",
+                "": "DATEDIFF(CAST(a AS DATE), CAST(b AS DATE))",
             },
         )
         self.validate_all(
@@ -315,6 +318,7 @@ class TestHive(Validator):
         self.validate_all(
             "DATE_FORMAT('2020-01-01', 'yyyy-MM-dd HH:mm:ss')",
             write={
+                "bigquery": "FORMAT_DATE('%Y-%m-%d %H:%M:%S', CAST('2020-01-01' AS DATETIME))",
                 "duckdb": "STRFTIME(CAST('2020-01-01' AS TIMESTAMP), '%Y-%m-%d %H:%M:%S')",
                 "presto": "DATE_FORMAT(CAST('2020-01-01' AS TIMESTAMP), '%Y-%m-%d %T')",
                 "hive": "DATE_FORMAT(CAST('2020-01-01' AS TIMESTAMP), 'yyyy-MM-dd HH:mm:ss')",
@@ -324,21 +328,29 @@ class TestHive(Validator):
         self.validate_all(
             "DATE_ADD('2020-01-01', 1)",
             write={
+                "": "TS_OR_DS_ADD('2020-01-01', 1, DAY)",
+                "bigquery": "DATE_ADD(CAST(CAST('2020-01-01' AS DATETIME) AS DATE), INTERVAL 1 DAY)",
                 "duckdb": "CAST('2020-01-01' AS DATE) + INTERVAL 1 DAY",
-                "presto": "DATE_ADD('DAY', 1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
                 "hive": "DATE_ADD('2020-01-01', 1)",
+                "presto": "DATE_ADD('DAY', 1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
+                "redshift": "DATEADD(DAY, 1, '2020-01-01')",
+                "snowflake": "DATEADD(DAY, 1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
                 "spark": "DATE_ADD('2020-01-01', 1)",
-                "": "TS_OR_DS_ADD('2020-01-01', 1, 'DAY')",
+                "tsql": "DATEADD(DAY, 1, CAST(CAST('2020-01-01' AS DATETIME2) AS DATE))",
             },
         )
         self.validate_all(
             "DATE_SUB('2020-01-01', 1)",
             write={
+                "": "TS_OR_DS_ADD('2020-01-01', 1 * -1, DAY)",
+                "bigquery": "DATE_ADD(CAST(CAST('2020-01-01' AS DATETIME) AS DATE), INTERVAL (1 * -1) DAY)",
                 "duckdb": "CAST('2020-01-01' AS DATE) + INTERVAL (1 * -1) DAY",
-                "presto": "DATE_ADD('DAY', 1 * -1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
                 "hive": "DATE_ADD('2020-01-01', 1 * -1)",
+                "presto": "DATE_ADD('DAY', 1 * -1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
+                "redshift": "DATEADD(DAY, 1 * -1, '2020-01-01')",
+                "snowflake": "DATEADD(DAY, 1 * -1, CAST(CAST('2020-01-01' AS TIMESTAMP) AS DATE))",
                 "spark": "DATE_ADD('2020-01-01', 1 * -1)",
-                "": "TS_OR_DS_ADD('2020-01-01', 1 * -1, 'DAY')",
+                "tsql": "DATEADD(DAY, 1 * -1, CAST(CAST('2020-01-01' AS DATETIME2) AS DATE))",
             },
         )
         self.validate_all("DATE_ADD('2020-01-01', -1)", read={"": "DATE_SUB('2020-01-01', 1)"})
@@ -349,18 +361,18 @@ class TestHive(Validator):
         self.validate_all(
             "DATEDIFF(TO_DATE(y), x)",
             write={
-                "duckdb": "DATE_DIFF('day', CAST(x AS DATE), CAST(CAST(y AS DATE) AS DATE))",
-                "presto": "DATE_DIFF('day', CAST(CAST(x AS TIMESTAMP) AS DATE), CAST(CAST(CAST(CAST(y AS TIMESTAMP) AS DATE) AS TIMESTAMP) AS DATE))",
-                "hive": "DATEDIFF(TO_DATE(TO_DATE(y)), TO_DATE(x))",
-                "spark": "DATEDIFF(TO_DATE(TO_DATE(y)), TO_DATE(x))",
-                "": "DATEDIFF(TS_OR_DS_TO_DATE(TS_OR_DS_TO_DATE(y)), TS_OR_DS_TO_DATE(x))",
+                "duckdb": "DATE_DIFF('DAY', CAST(x AS DATE), CAST(y AS DATE))",
+                "presto": "DATE_DIFF('DAY', CAST(CAST(x AS TIMESTAMP) AS DATE), CAST(CAST(CAST(CAST(y AS TIMESTAMP) AS DATE) AS TIMESTAMP) AS DATE))",
+                "hive": "DATEDIFF(TO_DATE(y), TO_DATE(x))",
+                "spark": "DATEDIFF(TO_DATE(y), TO_DATE(x))",
+                "": "DATEDIFF(CAST(y AS DATE), CAST(x AS DATE))",
             },
         )
         self.validate_all(
             "UNIX_TIMESTAMP(x)",
             write={
                 "duckdb": "EPOCH(STRPTIME(x, '%Y-%m-%d %H:%M:%S'))",
-                "presto": "TO_UNIXTIME(DATE_PARSE(x, '%Y-%m-%d %T'))",
+                "presto": "TO_UNIXTIME(COALESCE(TRY(DATE_PARSE(CAST(x AS VARCHAR), '%Y-%m-%d %T')), PARSE_DATETIME(CAST(x AS VARCHAR), 'yyyy-MM-dd HH:mm:ss')))",
                 "hive": "UNIX_TIMESTAMP(x)",
                 "spark": "UNIX_TIMESTAMP(x)",
                 "": "STR_TO_UNIX(x, '%Y-%m-%d %H:%M:%S')",
@@ -382,14 +394,24 @@ class TestHive(Validator):
         self.validate_all(
             "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
             write={
-                "duckdb": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname NULLS FIRST",
-                "presto": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname, lname NULLS FIRST",
-                "hive": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
-                "spark": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname NULLS LAST, lname",
+                "duckdb": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC, lname NULLS FIRST",
+                "presto": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC, lname NULLS FIRST",
+                "hive": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
+                "spark": "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
             },
         )
 
     def test_hive(self):
+        self.validate_identity("SET hiveconf:some_var = 5", check_command_warning=True)
+        self.validate_identity("(VALUES (1 AS a, 2 AS b, 3))")
+        self.validate_identity("SELECT * FROM my_table TIMESTAMP AS OF DATE_ADD(CURRENT_DATE, -1)")
+        self.validate_identity("SELECT * FROM my_table VERSION AS OF DATE_ADD(CURRENT_DATE, -1)")
+
+        self.validate_identity(
+            "SELECT ROW() OVER (DISTRIBUTE BY x SORT BY y)",
+            "SELECT ROW() OVER (PARTITION BY x ORDER BY y)",
+        )
+        self.validate_identity("SELECT transform")
         self.validate_identity("SELECT * FROM test DISTRIBUTE BY y SORT BY x DESC ORDER BY l")
         self.validate_identity(
             "SELECT * FROM test WHERE RAND() <= 0.1 DISTRIBUTE BY RAND() SORT BY RAND()"
@@ -407,6 +429,9 @@ class TestHive(Validator):
             "INSERT OVERWRITE TABLE zipcodes PARTITION(state = 0) VALUES (896, 'US', 'TAMPA', 33607)"
         )
         self.validate_identity(
+            "INSERT OVERWRITE DIRECTORY 'x' ROW FORMAT DELIMITED FIELDS TERMINATED BY '\001' COLLECTION ITEMS TERMINATED BY ',' MAP KEYS TERMINATED BY ':' LINES TERMINATED BY '' STORED AS TEXTFILE SELECT * FROM `a`.`b`"
+        )
+        self.validate_identity(
             "SELECT a, b, SUM(c) FROM tabl AS t GROUP BY a, b, GROUPING SETS ((a, b), a)"
         )
         self.validate_identity(
@@ -420,6 +445,17 @@ class TestHive(Validator):
         )
         self.validate_identity(
             "SELECT key, value, GROUPING__ID, COUNT(*) FROM T1 GROUP BY key, value WITH ROLLUP"
+        )
+        self.validate_identity(
+            "TRUNCATE TABLE t1 PARTITION(age = 10, name = 'test', address = 'abc')"
+        )
+
+        self.validate_all(
+            "SELECT ${hiveconf:some_var}",
+            write={
+                "hive": "SELECT ${hiveconf:some_var}",
+                "spark": "SELECT ${hiveconf:some_var}",
+            },
         )
         self.validate_all(
             "SELECT A.1a AS b FROM test_a AS A",
@@ -491,19 +527,26 @@ class TestHive(Validator):
         self.validate_all(
             "APPROX_COUNT_DISTINCT(a)",
             write={
+                "bigquery": "APPROX_COUNT_DISTINCT(a)",
                 "duckdb": "APPROX_COUNT_DISTINCT(a)",
                 "presto": "APPROX_DISTINCT(a)",
                 "hive": "APPROX_COUNT_DISTINCT(a)",
+                "snowflake": "APPROX_COUNT_DISTINCT(a)",
                 "spark": "APPROX_COUNT_DISTINCT(a)",
             },
         )
         self.validate_all(
             "ARRAY_CONTAINS(x, 1)",
+            read={
+                "duckdb": "LIST_HAS(x, 1)",
+                "snowflake": "ARRAY_CONTAINS(1, x)",
+            },
             write={
                 "duckdb": "ARRAY_CONTAINS(x, 1)",
                 "presto": "CONTAINS(x, 1)",
                 "hive": "ARRAY_CONTAINS(x, 1)",
                 "spark": "ARRAY_CONTAINS(x, 1)",
+                "snowflake": "ARRAY_CONTAINS(1, x)",
             },
         )
         self.validate_all(
@@ -528,7 +571,7 @@ class TestHive(Validator):
             "LOCATE('a', x, 3)",
             write={
                 "duckdb": "STRPOS(SUBSTR(x, 3), 'a') + 3 - 1",
-                "presto": "STRPOS(x, 'a', 3)",
+                "presto": "STRPOS(SUBSTR(x, 3), 'a') + 3 - 1",
                 "hive": "LOCATE('a', x, 3)",
                 "spark": "LOCATE('a', x, 3)",
             },
@@ -580,17 +623,11 @@ class TestHive(Validator):
             },
         )
         self.validate_all(
-            "STRUCT(a = b, c = d)",
-            read={
-                "snowflake": "OBJECT_CONSTRUCT(a, b, c, d)",
-            },
-        )
-        self.validate_all(
             "MAP(a, b, c, d)",
             read={
                 "": "VAR_MAP(a, b, c, d)",
                 "clickhouse": "map(a, b, c, d)",
-                "duckdb": "MAP(LIST_VALUE(a, c), LIST_VALUE(b, d))",
+                "duckdb": "MAP([a, c], [b, d])",
                 "hive": "MAP(a, b, c, d)",
                 "presto": "MAP(ARRAY[a, c], ARRAY[b, d])",
                 "spark": "MAP(a, b, c, d)",
@@ -598,7 +635,7 @@ class TestHive(Validator):
             write={
                 "": "MAP(ARRAY(a, c), ARRAY(b, d))",
                 "clickhouse": "map(a, b, c, d)",
-                "duckdb": "MAP(LIST_VALUE(a, c), LIST_VALUE(b, d))",
+                "duckdb": "MAP([a, c], [b, d])",
                 "presto": "MAP(ARRAY[a, c], ARRAY[b, d])",
                 "hive": "MAP(a, b, c, d)",
                 "spark": "MAP(a, b, c, d)",
@@ -608,7 +645,7 @@ class TestHive(Validator):
         self.validate_all(
             "MAP(a, b)",
             write={
-                "duckdb": "MAP(LIST_VALUE(a), LIST_VALUE(b))",
+                "duckdb": "MAP([a], [b])",
                 "presto": "MAP(ARRAY[a], ARRAY[b])",
                 "hive": "MAP(a, b)",
                 "spark": "MAP(a, b)",
@@ -622,15 +659,6 @@ class TestHive(Validator):
                 "presto": "LN(10)",
                 "hive": "LN(10)",
                 "spark": "LN(10)",
-            },
-        )
-        self.validate_all(
-            "LOG(10, 2)",
-            write={
-                "duckdb": "LOG(10, 2)",
-                "presto": "LOG(10, 2)",
-                "hive": "LOG(10, 2)",
-                "spark": "LOG(10, 2)",
             },
         )
         self.validate_all(
@@ -664,7 +692,7 @@ class TestHive(Validator):
             "x div y",
             write={
                 "duckdb": "x // y",
-                "presto": "CAST(x / y AS INTEGER)",
+                "presto": "CAST(CAST(x AS DOUBLE) / y AS INTEGER)",
                 "hive": "CAST(x / y AS INT)",
                 "spark": "CAST(x / y AS INT)",
             },
@@ -684,11 +712,15 @@ class TestHive(Validator):
         self.validate_all(
             "COLLECT_SET(x)",
             read={
+                "doris": "COLLECT_SET(x)",
                 "presto": "SET_AGG(x)",
+                "snowflake": "ARRAY_UNIQUE_AGG(x)",
             },
             write={
-                "presto": "SET_AGG(x)",
+                "doris": "COLLECT_SET(x)",
                 "hive": "COLLECT_SET(x)",
+                "presto": "SET_AGG(x)",
+                "snowflake": "ARRAY_UNIQUE_AGG(x)",
                 "spark": "COLLECT_SET(x)",
             },
         )
@@ -696,9 +728,11 @@ class TestHive(Validator):
             "SELECT * FROM x TABLESAMPLE (1 PERCENT) AS foo",
             read={
                 "presto": "SELECT * FROM x AS foo TABLESAMPLE BERNOULLI (1)",
+                "snowflake": "SELECT * FROM x AS foo TABLESAMPLE (1)",
             },
             write={
                 "hive": "SELECT * FROM x TABLESAMPLE (1 PERCENT) AS foo",
+                "snowflake": "SELECT * FROM x AS foo TABLESAMPLE (1)",
                 "spark": "SELECT * FROM x TABLESAMPLE (1 PERCENT) AS foo",
             },
         )
@@ -710,15 +744,12 @@ class TestHive(Validator):
         )
 
     def test_escapes(self) -> None:
-        self.validate_identity("'\n'")
+        self.validate_identity("'\n'", "'\\n'")
         self.validate_identity("'\\n'")
-        self.validate_identity("'\\\n'")
+        self.validate_identity("'\\\n'", "'\\\\\\n'")
         self.validate_identity("'\\\\n'")
         self.validate_identity("''")
         self.validate_identity("'\\\\'")
-        self.validate_identity("'\z'")
-        self.validate_identity("'\\z'")
-        self.validate_identity("'\\\z'")
         self.validate_identity("'\\\\z'")
 
     def test_data_type(self):

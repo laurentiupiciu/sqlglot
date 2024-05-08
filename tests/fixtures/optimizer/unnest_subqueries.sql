@@ -24,6 +24,8 @@ WHERE
   AND x.a = (SELECT SUM(y.c) AS c FROM y WHERE y.a = x.a OFFSET 10)
   AND x.a > ALL (SELECT y.c FROM y WHERE y.a = x.a)
   AND x.a > (SELECT COUNT(*) as d FROM y WHERE y.a = x.a)
+  AND x.a = SUM(SELECT 1)  -- invalid statement left alone
+  AND x.a IN (SELECT max(y.b) AS b FROM y GROUP BY y.a)
 ;
 SELECT
   *
@@ -40,7 +42,7 @@ LEFT JOIN (
   GROUP BY
     y.a
 ) AS _u_1
-  ON x.a = "_u_1"."a"
+  ON x.a = _u_1.a
 LEFT JOIN (
   SELECT
     y.b AS b
@@ -48,7 +50,7 @@ LEFT JOIN (
   GROUP BY
     y.b
 ) AS _u_2
-  ON x.a = "_u_2"."b"
+  ON x.a = _u_2.b
 LEFT JOIN (
   SELECT
     y.a AS a
@@ -56,7 +58,7 @@ LEFT JOIN (
   GROUP BY
     y.a
 ) AS _u_3
-  ON x.a = "_u_3"."a"
+  ON x.a = _u_3.a
 LEFT JOIN (
   SELECT
     SUM(y.b) AS b,
@@ -154,18 +156,32 @@ LEFT JOIN (
     y.a
 ) AS _u_21
   ON _u_21._u_22 = x.a
+LEFT JOIN (
+  SELECT
+    _q.b
+  FROM (
+    SELECT
+      MAX(y.b) AS b
+    FROM y
+    GROUP BY
+      y.a
+  ) AS _q
+  GROUP BY
+    _q.b
+) AS _u_24
+  ON x.a = _u_24.b
 WHERE
   x.a = _u_0.a
-  AND NOT "_u_1"."a" IS NULL
-  AND NOT "_u_2"."b" IS NULL
-  AND NOT "_u_3"."a" IS NULL
+  AND NOT _u_1.a IS NULL
+  AND NOT _u_2.b IS NULL
+  AND NOT _u_3.a IS NULL
   AND x.a = _u_4.b
   AND x.a > _u_6.b
   AND x.a = _u_8.a
   AND NOT x.a = _u_9.a
   AND ARRAY_ANY(_u_10.a, _x -> _x = x.a)
   AND (
-    x.a < _u_12.a AND ARRAY_ANY(_u_12._u_14, "_x" -> _x <> x.d)
+    x.a < _u_12.a AND ARRAY_ANY(_u_12._u_14, _x -> _x <> x.d)
   )
   AND NOT _u_15.a IS NULL
   AND x.a IN (
@@ -208,4 +224,20 @@ WHERE
     OFFSET 10
   )
   AND ARRAY_ALL(_u_19."", _x -> _x = x.a)
-  AND x.a > COALESCE(_u_21.d, 0);
+  AND x.a > COALESCE(_u_21.d, 0)
+  AND x.a = SUM(SELECT
+    1) /* invalid statement left alone */
+  AND NOT _u_24.b IS NULL
+;
+SELECT
+  CAST((
+    SELECT
+      x.a AS a
+    FROM x
+  ) AS TEXT) AS a;
+SELECT
+  CAST((
+    SELECT
+      x.a AS a
+    FROM x
+  ) AS TEXT) AS a;

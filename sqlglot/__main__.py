@@ -58,6 +58,12 @@ parser.add_argument(
     default="IMMEDIATE",
     help="IGNORE, WARN, RAISE, IMMEDIATE (default)",
 )
+parser.add_argument(
+    "--version",
+    action="version",
+    version=sqlglot.__version__,
+    help="Display the SQLGlot version",
+)
 
 
 args = parser.parse_args()
@@ -75,7 +81,7 @@ if args.parse:
         )
     ]
 elif args.tokenize:
-    objs = sqlglot.Dialect.get_or_raise(args.read)().tokenize(sql)
+    objs = sqlglot.Dialect.get_or_raise(args.read).tokenize(sql)
 else:
     objs = sqlglot.transpile(
         sql,

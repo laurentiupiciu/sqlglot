@@ -5,7 +5,8 @@ import typing as t
 from sqlglot import exp, generator, parser, tokens, transforms
 from sqlglot.dialects.dialect import (
     Dialect,
-    arrow_json_extract_scalar_sql,
+    NormalizationStrategy,
+    any_value_to_max_sql,
     arrow_json_extract_sql,
     concat_to_dpipe_sql,
     count_if_to_sum,
@@ -18,12 +19,26 @@ from sqlglot.dialects.dialect import (
 from sqlglot.tokens import TokenType
 
 
-def _date_add_sql(self: generator.Generator, expression: exp.DateAdd) -> str:
+def _date_add_sql(self: SQLite.Generator, expression: exp.DateAdd) -> str:
     modifier = expression.expression
     modifier = modifier.name if modifier.is_string else self.sql(modifier)
     unit = expression.args.get("unit")
     modifier = f"'{modifier} {unit.name}'" if unit else f"'{modifier}'"
     return self.func("DATE", expression.this, modifier)
+
+
+def _json_extract_sql(self: SQLite.Generator, expression: exp.JSONExtract) -> str:
+    if expression.expressions:
+        return self.function_fallback_sql(expression)
+    return arrow_json_extract_sql(self, expression)
+
+
+def _build_strftime(args: t.List) -> exp.Anonymous | exp.TimeToStr:
+    if len(args) == 1:
+        args.append(exp.CurrentTimestamp())
+    if len(args) == 2:
+        return exp.TimeToStr(this=exp.TsOrDsToTimestamp(this=args[1]), format=args[0])
+    return exp.Anonymous(this="STRFTIME", expressions=args)
 
 
 def _transform_create(expression: exp.Expression) -> exp.Expression:
@@ -49,7 +64,7 @@ def _transform_create(expression: exp.Expression) -> exp.Expression:
         else:
             for column in defs.values():
                 auto_increment = None
-                for constraint in column.constraints.copy():
+                for constraint in column.constraints:
                     if isinstance(constraint.kind, exp.PrimaryKeyColumnConstraint):
                         break
                     if isinstance(constraint.kind, exp.AutoIncrementColumnConstraint):
@@ -62,7 +77,10 @@ def _transform_create(expression: exp.Expression) -> exp.Expression:
 
 class SQLite(Dialect):
     # https://sqlite.org/forum/forumpost/5e575586ac5c711b?raw
-    RESOLVES_IDENTIFIERS_AS_UPPERCASE = None
+    NORMALIZATION_STRATEGY = NormalizationStrategy.CASE_INSENSITIVE
+    SUPPORTS_SEMI_ANTI_JOIN = False
+    TYPED_DIVISION = True
+    SAFE_DIVISION = True
 
     class Tokenizer(tokens.Tokenizer):
         IDENTIFIERS = ['"', ("[", "]"), "`"]
@@ -72,12 +90,25 @@ class SQLite(Dialect):
         FUNCTIONS = {
             **parser.Parser.FUNCTIONS,
             "EDITDIST3": exp.Levenshtein.from_arg_list,
+            "STRFTIME": _build_strftime,
         }
+        STRING_ALIASES = True
 
     class Generator(generator.Generator):
         JOIN_HINTS = False
         TABLE_HINTS = False
         QUERY_HINTS = False
+        NVL2_SUPPORTED = False
+        JSON_PATH_BRACKETED_KEY_SUPPORTED = False
+        SUPPORTS_CREATE_TABLE_LIKE = False
+        SUPPORTS_TABLE_ALIAS_COLUMNS = False
+        SUPPORTS_TO_NUMBER = False
+
+        SUPPORTED_JSON_PATH_PARTS = {
+            exp.JSONPathKey,
+            exp.JSONPathRoot,
+            exp.JSONPathSubscript,
+        }
 
         TYPE_MAPPING = {
             **generator.Generator.TYPE_MAPPING,
@@ -103,6 +134,7 @@ class SQLite(Dialect):
 
         TRANSFORMS = {
             **generator.Generator.TRANSFORMS,
+            exp.AnyValue: any_value_to_max_sql,
             exp.Concat: concat_to_dpipe_sql,
             exp.CountIf: count_if_to_sum,
             exp.Create: transforms.preprocess([_transform_create]),
@@ -111,28 +143,40 @@ class SQLite(Dialect):
             exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
             exp.DateAdd: _date_add_sql,
             exp.DateStrToDate: lambda self, e: self.sql(e, "this"),
+            exp.If: rename_func("IIF"),
             exp.ILike: no_ilike_sql,
-            exp.JSONExtract: arrow_json_extract_sql,
-            exp.JSONExtractScalar: arrow_json_extract_scalar_sql,
-            exp.JSONBExtract: arrow_json_extract_sql,
-            exp.JSONBExtractScalar: arrow_json_extract_scalar_sql,
+            exp.JSONExtract: _json_extract_sql,
+            exp.JSONExtractScalar: arrow_json_extract_sql,
             exp.Levenshtein: rename_func("EDITDIST3"),
             exp.LogicalOr: rename_func("MAX"),
             exp.LogicalAnd: rename_func("MIN"),
             exp.Pivot: no_pivot_sql,
-            exp.SafeConcat: concat_to_dpipe_sql,
+            exp.Rand: rename_func("RANDOM"),
             exp.Select: transforms.preprocess(
-                [transforms.eliminate_distinct_on, transforms.eliminate_qualify]
+                [
+                    transforms.eliminate_distinct_on,
+                    transforms.eliminate_qualify,
+                    transforms.eliminate_semi_and_anti_joins,
+                ]
             ),
             exp.TableSample: no_tablesample_sql,
             exp.TimeStrToTime: lambda self, e: self.sql(e, "this"),
+            exp.TimeToStr: lambda self, e: self.func("STRFTIME", e.args.get("format"), e.this),
             exp.TryCast: no_trycast_sql,
+            exp.TsOrDsToTimestamp: lambda self, e: self.sql(e, "this"),
         }
 
+        # SQLite doesn't generally support CREATE TABLE .. properties
+        # https://www.sqlite.org/lang_createtable.html
         PROPERTIES_LOCATION = {
-            k: exp.Properties.Location.UNSUPPORTED
-            for k, v in generator.Generator.PROPERTIES_LOCATION.items()
+            prop: exp.Properties.Location.UNSUPPORTED
+            for prop in generator.Generator.PROPERTIES_LOCATION
         }
+
+        # There are a few exceptions (e.g. temporary tables) which are supported or
+        # can be transpiled to SQLite, so we explicitly override them accordingly
+        PROPERTIES_LOCATION[exp.LikeProperty] = exp.Properties.Location.POST_SCHEMA
+        PROPERTIES_LOCATION[exp.TemporaryProperty] = exp.Properties.Location.POST_CREATE
 
         LIMIT_FETCH = "LIMIT"
 
@@ -141,6 +185,21 @@ class SQLite(Dialect):
                 return self.func("DATE", expression.this)
 
             return super().cast_sql(expression)
+
+        def generateseries_sql(self, expression: exp.GenerateSeries) -> str:
+            parent = expression.parent
+            alias = parent and parent.args.get("alias")
+
+            if isinstance(alias, exp.TableAlias) and alias.columns:
+                column_alias = alias.columns[0]
+                alias.set("columns", None)
+                sql = self.sql(
+                    exp.select(exp.alias_("value", column_alias)).from_(expression).subquery()
+                )
+            else:
+                sql = super().generateseries_sql(expression)
+
+            return sql
 
         def datediff_sql(self, expression: exp.DateDiff) -> str:
             unit = expression.args.get("unit")

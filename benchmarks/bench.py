@@ -2,15 +2,14 @@ import collections.abc
 
 # moz_sql_parser 3.10 compatibility
 collections.Iterable = collections.abc.Iterable
-import gc
 import timeit
 
 import numpy as np
 
-#import sqlfluff
-#import moz_sql_parser
-#import sqloxide
-#import sqlparse
+# import sqlfluff
+# import moz_sql_parser
+# import sqloxide
+# import sqlparse
 import sqltree
 
 import sqlglot
@@ -160,11 +159,17 @@ LIMIT 100
 
 
 def sqlglot_parse(sql):
-    sqlglot.parse(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+    sqlglot.tokens.USE_RS_TOKENIZER = False
+    sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+
+
+def sqlglotrs_parse(sql):
+    sqlglot.tokens.USE_RS_TOKENIZER = True
+    sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
 
 
 def sqltree_parse(sql):
-    sqltree.api.sqltree(sql.replace('"', '`').replace("''", '"'))
+    sqltree.api.sqltree(sql.replace('"', "`").replace("''", '"'))
 
 
 def sqlparse_parse(sql):
@@ -199,11 +204,12 @@ def diff(row, column):
 
 libs = [
     "sqlglot",
-    #"sqlfluff",
+    "sqlglotrs",
+    # "sqlfluff",
     "sqltree",
-    #"sqlparse",
-    #"moz_sql_parser",
-    #"sqloxide",
+    # "sqlparse",
+    # "moz_sql_parser",
+    # "sqloxide",
 ]
 table = []
 
@@ -224,10 +230,12 @@ lines = [border(column.rjust(width) for column, width in widths.items())]
 lines.append(border(str("-" * width) for width in widths.values()))
 
 for i, row in enumerate(table):
-    lines.append(border(
-        (str(row[column])[0:7] + diff(row, column)).rjust(width)[0 : width]
-        for column, width in widths.items()
-    ))
+    lines.append(
+        border(
+            (str(row[column])[0:7] + diff(row, column)).rjust(width)[0:width]
+            for column, width in widths.items()
+        )
+    )
 
 for line in lines:
     print(line)

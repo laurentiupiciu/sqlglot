@@ -48,7 +48,9 @@ class WindowSpec:
         return WindowSpec(self.expression.copy())
 
     def sql(self, **kwargs) -> str:
-        return self.expression.sql(dialect="spark", **kwargs)
+        from sqlglot.dataframe.sql.session import SparkSession
+
+        return self.expression.sql(dialect=SparkSession().dialect, **kwargs)
 
     def partitionBy(self, *cols: t.Union[ColumnOrName, t.List[ColumnOrName]]) -> WindowSpec:
         from sqlglot.dataframe.sql.column import Column
@@ -88,9 +90,11 @@ class WindowSpec:
                 **kwargs,
                 **{
                     "start_side": "PRECEDING",
-                    "start": "UNBOUNDED"
-                    if start <= Window.unboundedPreceding
-                    else F.lit(start).expression,
+                    "start": (
+                        "UNBOUNDED"
+                        if start <= Window.unboundedPreceding
+                        else F.lit(start).expression
+                    ),
                 },
             }
         if end == Window.currentRow:
@@ -100,9 +104,9 @@ class WindowSpec:
                 **kwargs,
                 **{
                     "end_side": "FOLLOWING",
-                    "end": "UNBOUNDED"
-                    if end >= Window.unboundedFollowing
-                    else F.lit(end).expression,
+                    "end": (
+                        "UNBOUNDED" if end >= Window.unboundedFollowing else F.lit(end).expression
+                    ),
                 },
             }
         return kwargs

@@ -1,51 +1,100 @@
 from __future__ import annotations
 
+import typing as t
+
 from sqlglot import exp, generator, parser, tokens, transforms
-from sqlglot.dialects.dialect import Dialect, max_or_greatest, min_or_least
+from sqlglot.dialects.dialect import (
+    Dialect,
+    max_or_greatest,
+    min_or_least,
+    rename_func,
+    to_number_with_nls_param,
+)
 from sqlglot.tokens import TokenType
 
 
+def _date_add_sql(
+    kind: t.Literal["+", "-"],
+) -> t.Callable[[Teradata.Generator, exp.DateAdd | exp.DateSub], str]:
+    def func(self: Teradata.Generator, expression: exp.DateAdd | exp.DateSub) -> str:
+        this = self.sql(expression, "this")
+        unit = expression.args.get("unit")
+        value = self._simplify_unless_literal(expression.expression)
+
+        if not isinstance(value, exp.Literal):
+            self.unsupported("Cannot add non literal")
+
+        if value.is_negative:
+            kind_to_op = {"+": "-", "-": "+"}
+            value = exp.Literal.string(value.name[1:])
+        else:
+            kind_to_op = {"+": "+", "-": "-"}
+            value.set("is_string", True)
+
+        return f"{this} {kind_to_op[kind]} {self.sql(exp.Interval(this=value, unit=unit))}"
+
+    return func
+
+
 class Teradata(Dialect):
+    SUPPORTS_SEMI_ANTI_JOIN = False
+    TYPED_DIVISION = True
+
     TIME_MAPPING = {
-        "Y": "%Y",
-        "YYYY": "%Y",
         "YY": "%y",
-        "MMMM": "%B",
-        "MMM": "%b",
-        "DD": "%d",
-        "D": "%-d",
-        "HH": "%H",
-        "H": "%-H",
-        "MM": "%M",
+        "Y4": "%Y",
+        "YYYY": "%Y",
+        "M4": "%B",
+        "M3": "%b",
         "M": "%-M",
-        "SS": "%S",
+        "MI": "%M",
+        "MM": "%m",
+        "MMM": "%b",
+        "MMMM": "%B",
+        "D": "%-d",
+        "DD": "%d",
+        "D3": "%j",
+        "DDD": "%j",
+        "H": "%-H",
+        "HH": "%H",
+        "HH24": "%H",
         "S": "%-S",
+        "SS": "%S",
         "SSSSSS": "%f",
         "E": "%a",
         "EE": "%a",
+        "E3": "%a",
+        "E4": "%A",
         "EEE": "%a",
         "EEEE": "%A",
     }
 
     class Tokenizer(tokens.Tokenizer):
         # https://docs.teradata.com/r/Teradata-Database-SQL-Functions-Operators-Expressions-and-Predicates/March-2017/Comparison-Operators-and-Functions/Comparison-Operators/ANSI-Compliance
+        # https://docs.teradata.com/r/SQL-Functions-Operators-Expressions-and-Predicates/June-2017/Arithmetic-Trigonometric-Hyperbolic-Operators/Functions
         KEYWORDS = {
             **tokens.Tokenizer.KEYWORDS,
+            "**": TokenType.DSTAR,
             "^=": TokenType.NEQ,
             "BYTEINT": TokenType.SMALLINT,
             "COLLECT": TokenType.COMMAND,
+            "DEL": TokenType.DELETE,
+            "EQ": TokenType.EQ,
             "GE": TokenType.GTE,
             "GT": TokenType.GT,
             "HELP": TokenType.COMMAND,
             "INS": TokenType.INSERT,
             "LE": TokenType.LTE,
             "LT": TokenType.LT,
+            "MINUS": TokenType.EXCEPT,
             "MOD": TokenType.MOD,
             "NE": TokenType.NEQ,
             "NOT=": TokenType.NEQ,
+            "SAMPLE": TokenType.TABLE_SAMPLE,
             "SEL": TokenType.SELECT,
             "ST_GEOMETRY": TokenType.GEOMETRY,
             "TOP": TokenType.TOP,
+            "UPD": TokenType.UPDATE,
         }
 
         # Teradata does not support % as a modulo operator
@@ -53,6 +102,9 @@ class Teradata(Dialect):
         SINGLE_TOKENS.pop("%")
 
     class Parser(parser.Parser):
+        TABLESAMPLE_CSV = True
+        VALUES_FOLLOWED_BY_PAREN = False
+
         CHARSET_TRANSLATORS = {
             "GRAPHIC_TO_KANJISJIS",
             "GRAPHIC_TO_LATIN",
@@ -93,13 +145,22 @@ class Teradata(Dialect):
 
         STATEMENT_PARSERS = {
             **parser.Parser.STATEMENT_PARSERS,
+            TokenType.DATABASE: lambda self: self.expression(
+                exp.Use, this=self._parse_table(schema=False)
+            ),
             TokenType.REPLACE: lambda self: self._parse_create(),
         }
 
         FUNCTION_PARSERS = {
             **parser.Parser.FUNCTION_PARSERS,
+            # https://docs.teradata.com/r/SQL-Functions-Operators-Expressions-and-Predicates/June-2017/Data-Type-Conversions/TRYCAST
+            "TRYCAST": parser.Parser.FUNCTION_PARSERS["TRY_CAST"],
             "RANGE_N": lambda self: self._parse_rangen(),
             "TRANSLATE": lambda self: self._parse_translate(self.STRICT_CAST),
+        }
+
+        EXPONENT = {
+            TokenType.DSTAR: exp.Pow,
         }
 
         def _parse_translate(self, strict: bool) -> exp.Expression:
@@ -140,13 +201,18 @@ class Teradata(Dialect):
             return self.expression(exp.RangeN, this=this, expressions=expressions, each=each)
 
     class Generator(generator.Generator):
+        LIMIT_IS_TOP = True
         JOIN_HINTS = False
         TABLE_HINTS = False
         QUERY_HINTS = False
+        TABLESAMPLE_KEYWORDS = "SAMPLE"
+        LAST_DAY_SUPPORTS_DATE_PART = False
+        CAN_IMPLEMENT_ARRAY_ANY = True
 
         TYPE_MAPPING = {
             **generator.Generator.TYPE_MAPPING,
             exp.DataType.Type.GEOMETRY: "ST_GEOMETRY",
+            exp.DataType.Type.DOUBLE: "DOUBLE PRECISION",
         }
 
         PROPERTIES_LOCATION = {
@@ -158,12 +224,43 @@ class Teradata(Dialect):
 
         TRANSFORMS = {
             **generator.Generator.TRANSFORMS,
+            exp.ArgMax: rename_func("MAX_BY"),
+            exp.ArgMin: rename_func("MIN_BY"),
+            exp.ArraySize: rename_func("CARDINALITY"),
             exp.Max: max_or_greatest,
             exp.Min: min_or_least,
-            exp.Select: transforms.preprocess([transforms.eliminate_distinct_on]),
-            exp.StrToDate: lambda self, e: f"CAST({self.sql(e, 'this')} AS DATE FORMAT {self.format_time(e)})",
+            exp.Pow: lambda self, e: self.binary(e, "**"),
+            exp.Select: transforms.preprocess(
+                [transforms.eliminate_distinct_on, transforms.eliminate_semi_and_anti_joins]
+            ),
+            exp.StrToDate: lambda self,
+            e: f"CAST({self.sql(e, 'this')} AS DATE FORMAT {self.format_time(e)})",
             exp.ToChar: lambda self, e: self.function_fallback_sql(e),
+            exp.ToNumber: to_number_with_nls_param,
+            exp.Use: lambda self, e: f"DATABASE {self.sql(e, 'this')}",
+            exp.CurrentTimestamp: lambda *_: "CURRENT_TIMESTAMP",
+            exp.DateAdd: _date_add_sql("+"),
+            exp.DateSub: _date_add_sql("-"),
+            exp.Quarter: lambda self, e: self.sql(exp.Extract(this="QUARTER", expression=e.this)),
         }
+
+        def cast_sql(self, expression: exp.Cast, safe_prefix: t.Optional[str] = None) -> str:
+            if expression.to.this == exp.DataType.Type.UNKNOWN and expression.args.get("format"):
+                # We don't actually want to print the unknown type in CAST(<value> AS FORMAT <format>)
+                expression.to.pop()
+
+            return super().cast_sql(expression, safe_prefix=safe_prefix)
+
+        def trycast_sql(self, expression: exp.TryCast) -> str:
+            return self.cast_sql(expression, safe_prefix="TRY")
+
+        def tablesample_sql(
+            self,
+            expression: exp.TableSample,
+            sep: str = " AS ",
+            tablesample_keyword: t.Optional[str] = None,
+        ) -> str:
+            return f"{self.sql(expression, 'this')} SAMPLE {self.expressions(expression)}"
 
         def partitionedbyproperty_sql(self, expression: exp.PartitionedByProperty) -> str:
             return f"PARTITION BY {self.sql(expression, 'this')}"
@@ -194,11 +291,7 @@ class Teradata(Dialect):
 
             return f"RANGE_N({this} BETWEEN {expressions_sql}{each_sql})"
 
-        def createable_sql(
-            self,
-            expression: exp.Create,
-            locations: dict[exp.Properties.Location, list[exp.Property]],
-        ) -> str:
+        def createable_sql(self, expression: exp.Create, locations: t.DefaultDict) -> str:
             kind = self.sql(expression, "kind").upper()
             if kind == "TABLE" and locations.get(exp.Properties.Location.POST_NAME):
                 this_name = self.sql(expression.this, "this")
@@ -209,4 +302,27 @@ class Teradata(Dialect):
                 )
                 this_schema = self.schema_columns_sql(expression.this)
                 return f"{this_name}{this_properties}{self.sep()}{this_schema}"
+
             return super().createable_sql(expression, locations)
+
+        def extract_sql(self, expression: exp.Extract) -> str:
+            this = self.sql(expression, "this")
+            if this.upper() != "QUARTER":
+                return super().extract_sql(expression)
+
+            to_char = exp.func("to_char", expression.expression, exp.Literal.string("Q"))
+            return self.sql(exp.cast(to_char, exp.DataType.Type.INT))
+
+        def interval_sql(self, expression: exp.Interval) -> str:
+            multiplier = 0
+            unit = expression.text("unit")
+
+            if unit.startswith("WEEK"):
+                multiplier = 7
+            elif unit.startswith("QUARTER"):
+                multiplier = 90
+
+            if multiplier:
+                return f"({multiplier} * {super().interval_sql(exp.Interval(this=expression.this, unit=exp.var('DAY')))})"
+
+            return super().interval_sql(expression)

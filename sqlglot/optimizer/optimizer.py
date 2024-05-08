@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import typing as t
 
 import sqlglot
@@ -42,8 +43,8 @@ RULES = (
 def optimize(
     expression: str | exp.Expression,
     schema: t.Optional[dict | Schema] = None,
-    db: t.Optional[str] = None,
-    catalog: t.Optional[str] = None,
+    db: t.Optional[str | exp.Identifier] = None,
+    catalog: t.Optional[str | exp.Identifier] = None,
     dialect: DialectType = None,
     rules: t.Sequence[t.Callable] = RULES,
     **kwargs,
@@ -82,13 +83,13 @@ def optimize(
         **kwargs,
     }
 
-    expression = exp.maybe_parse(expression, dialect=dialect, copy=True)
+    optimized = exp.maybe_parse(expression, dialect=dialect, copy=True)
     for rule in rules:
         # Find any additional rule parameters, beyond `expression`
-        rule_params = rule.__code__.co_varnames
+        rule_params = inspect.getfullargspec(rule).args
         rule_kwargs = {
             param: possible_kwargs[param] for param in rule_params if param in possible_kwargs
         }
-        expression = rule(expression, **rule_kwargs)
+        optimized = rule(optimized, **rule_kwargs)
 
-    return t.cast(exp.Expression, expression)
+    return optimized

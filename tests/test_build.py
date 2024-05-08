@@ -3,6 +3,7 @@ import unittest
 from sqlglot import (
     alias,
     and_,
+    case,
     condition,
     except_,
     exp,
@@ -77,16 +78,23 @@ class TestBuild(unittest.TestCase):
             (lambda: x.ilike("y"), "x ILIKE 'y'"),
             (lambda: x.rlike("y"), "REGEXP_LIKE(x, 'y')"),
             (
-                lambda: exp.Case().when("x = 1", "x").else_("bar"),
+                lambda: case().when("x = 1", "x").else_("bar"),
                 "CASE WHEN x = 1 THEN x ELSE bar END",
             ),
+            (
+                lambda: case("x").when("1", "x").else_("bar"),
+                "CASE x WHEN 1 THEN x ELSE bar END",
+            ),
             (lambda: exp.func("COALESCE", "x", 1), "COALESCE(x, 1)"),
+            (lambda: exp.column("x").desc(), "x DESC"),
+            (lambda: exp.column("x").desc(nulls_first=True), "x DESC NULLS FIRST"),
             (lambda: select("x"), "SELECT x"),
             (lambda: select("x"), "SELECT x"),
             (lambda: select("x", "y"), "SELECT x, y"),
             (lambda: select("x").from_("tbl"), "SELECT x FROM tbl"),
             (lambda: select("x", "y").from_("tbl"), "SELECT x, y FROM tbl"),
             (lambda: select("x").select("y").from_("tbl"), "SELECT x, y FROM tbl"),
+            (lambda: select("comment", "begin"), "SELECT comment, begin"),
             (
                 lambda: select("x").select("y", append=False).from_("tbl"),
                 "SELECT y FROM tbl",
@@ -293,6 +301,10 @@ class TestBuild(unittest.TestCase):
                 "SELECT x FROM tbl ORDER BY y",
             ),
             (
+                lambda: parse_one("select * from x union select * from y").order_by("y"),
+                "SELECT * FROM x UNION SELECT * FROM y ORDER BY y",
+            ),
+            (
                 lambda: select("x").from_("tbl").cluster_by("y"),
                 "SELECT x FROM tbl CLUSTER BY y",
                 "hive",
@@ -494,9 +506,32 @@ class TestBuild(unittest.TestCase):
                 ),
                 "SELECT x FROM (SELECT x FROM tbl UNION SELECT x FROM bar) AS unioned",
             ),
+            (lambda: parse_one("(SELECT 1)").select("2"), "(SELECT 1, 2)"),
+            (
+                lambda: parse_one("(SELECT 1)").limit(1),
+                "(SELECT 1) LIMIT 1",
+            ),
+            (
+                lambda: parse_one("WITH t AS (SELECT 1) (SELECT 1)").limit(1),
+                "WITH t AS (SELECT 1) (SELECT 1) LIMIT 1",
+            ),
+            (
+                lambda: parse_one("(SELECT 1 LIMIT 2)").limit(1),
+                "(SELECT 1 LIMIT 2) LIMIT 1",
+            ),
+            (
+                lambda: parse_one("SELECT 1 UNION SELECT 2").limit(5).offset(2),
+                "SELECT 1 UNION SELECT 2 LIMIT 5 OFFSET 2",
+            ),
+            (lambda: parse_one("(SELECT 1)").subquery(), "((SELECT 1))"),
+            (lambda: parse_one("(SELECT 1)").subquery("alias"), "((SELECT 1)) AS alias"),
+            (
+                lambda: parse_one("(select * from foo)").with_("foo", "select 1 as c"),
+                "WITH foo AS (SELECT 1 AS c) (SELECT * FROM foo)",
+            ),
             (
                 lambda: exp.update("tbl", {"x": None, "y": {"x": 1}}),
-                "UPDATE tbl SET x = NULL, y = MAP('x', 1)",
+                "UPDATE tbl SET x = NULL, y = MAP(ARRAY('x'), ARRAY(1))",
             ),
             (
                 lambda: exp.update("tbl", {"x": 1}, where="y > 0"),
@@ -509,6 +544,10 @@ class TestBuild(unittest.TestCase):
             (
                 lambda: exp.update("tbl", {"x": 1}, from_="tbl2"),
                 "UPDATE tbl SET x = 1 FROM tbl2",
+            ),
+            (
+                lambda: exp.update("tbl", {"x": 1}, from_="tbl2 cross join tbl3"),
+                "UPDATE tbl SET x = 1 FROM tbl2 CROSS JOIN tbl3",
             ),
             (
                 lambda: union("SELECT * FROM foo", "SELECT * FROM bla"),
@@ -614,12 +653,20 @@ class TestBuild(unittest.TestCase):
                 "INSERT INTO tbl SELECT * FROM tbl2",
             ),
             (
+                lambda: exp.insert("SELECT * FROM tbl2", "tbl", returning="*"),
+                "INSERT INTO tbl SELECT * FROM tbl2 RETURNING *",
+            ),
+            (
                 lambda: exp.insert("SELECT * FROM tbl2", "tbl", overwrite=True),
                 "INSERT OVERWRITE TABLE tbl SELECT * FROM tbl2",
             ),
             (
                 lambda: exp.insert("VALUES (1, 2), (3, 4)", "tbl", columns=["cola", "colb"]),
                 "INSERT INTO tbl (cola, colb) VALUES (1, 2), (3, 4)",
+            ),
+            (
+                lambda: exp.insert("VALUES (1), (2)", "tbl", columns=["col a"]),
+                'INSERT INTO tbl ("col a") VALUES (1), (2)',
             ),
             (
                 lambda: exp.insert("SELECT * FROM cte", "t").with_("cte", as_="SELECT x FROM tbl"),
@@ -629,6 +676,20 @@ class TestBuild(unittest.TestCase):
                 lambda: exp.convert((exp.column("x"), exp.column("y"))).isin((1, 2), (3, 4)),
                 "(x, y) IN ((1, 2), (3, 4))",
                 "postgres",
+            ),
+            (lambda: exp.cast("CAST(x AS INT)", "int"), "CAST(x AS INT)"),
+            (lambda: exp.cast("CAST(x AS TEXT)", "int"), "CAST(CAST(x AS TEXT) AS INT)"),
+            (
+                lambda: exp.rename_column("table1", "c1", "c2", True),
+                "ALTER TABLE table1 RENAME COLUMN IF EXISTS c1 TO c2",
+            ),
+            (
+                lambda: exp.rename_column("table1", "c1", "c2", False),
+                "ALTER TABLE table1 RENAME COLUMN c1 TO c2",
+            ),
+            (
+                lambda: exp.rename_column("table1", "c1", "c2"),
+                "ALTER TABLE table1 RENAME COLUMN c1 TO c2",
             ),
         ]:
             with self.subTest(sql):

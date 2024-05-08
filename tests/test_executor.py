@@ -1,13 +1,15 @@
+import os
 import datetime
 import unittest
-from datetime import date
+from datetime import date, time
 from multiprocessing import Pool
 
 import duckdb
+import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from sqlglot import exp, parse_one
+from sqlglot import exp, parse_one, transpile
 from sqlglot.errors import ExecuteError
 from sqlglot.executor import execute
 from sqlglot.executor.python import Python
@@ -16,40 +18,53 @@ from tests.helpers import (
     FIXTURES_DIR,
     SKIP_INTEGRATION,
     TPCH_SCHEMA,
+    TPCDS_SCHEMA,
     load_sql_fixture_pairs,
+    string_to_bool,
 )
 
-DIR = FIXTURES_DIR + "/optimizer/tpc-h/"
+DIR_TPCH = FIXTURES_DIR + "/optimizer/tpc-h/"
+DIR_TPCDS = FIXTURES_DIR + "/optimizer/tpc-ds/"
 
 
 @unittest.skipIf(SKIP_INTEGRATION, "Skipping Integration Tests since `SKIP_INTEGRATION` is set")
 class TestExecutor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.conn = duckdb.connect()
+        cls.tpch_conn = duckdb.connect()
+        cls.tpcds_conn = duckdb.connect()
 
         for table, columns in TPCH_SCHEMA.items():
-            cls.conn.execute(
+            cls.tpch_conn.execute(
                 f"""
                 CREATE VIEW {table} AS
                 SELECT *
-                FROM READ_CSV('{DIR}{table}.csv.gz', delim='|', header=True, columns={columns})
+                FROM READ_CSV('{DIR_TPCH}{table}.csv.gz', delim='|', header=True, columns={columns})
+                """
+            )
+
+        for table, columns in TPCDS_SCHEMA.items():
+            cls.tpcds_conn.execute(
+                f"""
+                CREATE VIEW {table} AS
+                SELECT *
+                FROM READ_CSV('{DIR_TPCDS}{table}.csv.gz', delim='|', header=True, columns={columns})
                 """
             )
 
         cls.cache = {}
-        cls.sqls = [
-            (sql, expected)
-            for _, sql, expected in load_sql_fixture_pairs("optimizer/tpc-h/tpc-h.sql")
-        ]
+        cls.tpch_sqls = list(load_sql_fixture_pairs("optimizer/tpc-h/tpc-h.sql"))
+        cls.tpcds_sqls = list(load_sql_fixture_pairs("optimizer/tpc-ds/tpc-ds.sql"))
 
     @classmethod
     def tearDownClass(cls):
-        cls.conn.close()
+        cls.tpch_conn.close()
+        cls.tpcds_conn.close()
 
-    def cached_execute(self, sql):
+    def cached_execute(self, sql, tpch=True):
+        conn = self.tpch_conn if tpch else self.tpcds_conn
         if sql not in self.cache:
-            self.cache[sql] = self.conn.execute(sql).fetchdf()
+            self.cache[sql] = conn.execute(transpile(sql, write="duckdb")[0]).fetchdf()
         return self.cache[sql]
 
     def rename_anonymous(self, source, target):
@@ -65,18 +80,28 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(generate(parse_one("x is null")), "scope[None][x] is None")
 
     def test_optimized_tpch(self):
-        for i, (sql, optimized) in enumerate(self.sqls[:20], start=1):
+        for i, (_, sql, optimized) in enumerate(self.tpch_sqls, start=1):
             with self.subTest(f"{i}, {sql}"):
-                a = self.cached_execute(sql)
-                b = self.conn.execute(optimized).fetchdf()
+                a = self.cached_execute(sql, tpch=True)
+                b = self.tpch_conn.execute(transpile(optimized, write="duckdb")[0]).fetchdf()
                 self.rename_anonymous(b, a)
                 assert_frame_equal(a, b)
+
+    def subtestHelper(self, i, table, tpch=True):
+        with self.subTest(f"{'tpc-h' if tpch else 'tpc-ds'} {i + 1}"):
+            _, sql, _ = self.tpch_sqls[i] if tpch else self.tpcds_sqls[i]
+            a = self.cached_execute(sql, tpch=tpch)
+            b = pd.DataFrame(
+                ((np.nan if c is None else c for c in r) for r in table.rows),
+                columns=table.columns,
+            )
+            assert_frame_equal(a, b, check_dtype=False, check_index_type=False)
 
     def test_execute_tpch(self):
         def to_csv(expression):
             if isinstance(expression, exp.Table) and expression.name not in ("revenue"):
                 return parse_one(
-                    f"READ_CSV('{DIR}{expression.name}.csv.gz', 'delimiter', '|') AS {expression.alias_or_name}"
+                    f"READ_CSV('{DIR_TPCH}{expression.name}.csv.gz', 'delimiter', '|') AS {expression.alias_or_name}"
                 )
             return expression
 
@@ -86,15 +111,26 @@ class TestExecutor(unittest.TestCase):
                     execute,
                     (
                         (parse_one(sql).transform(to_csv).sql(pretty=True), TPCH_SCHEMA)
-                        for sql, _ in self.sqls
+                        for _, sql, _ in self.tpch_sqls
                     ),
                 )
             ):
-                with self.subTest(f"tpch-h {i + 1}"):
-                    sql, _ = self.sqls[i]
-                    a = self.cached_execute(sql)
-                    b = pd.DataFrame(table.rows, columns=table.columns)
-                    assert_frame_equal(a, b, check_dtype=False, check_index_type=False)
+                self.subtestHelper(i, table, tpch=True)
+
+    def test_execute_tpcds(self):
+        def to_csv(expression):
+            if isinstance(expression, exp.Table) and os.path.exists(
+                f"{DIR_TPCDS}{expression.name}.csv.gz"
+            ):
+                return parse_one(
+                    f"READ_CSV('{DIR_TPCDS}{expression.name}.csv.gz', 'delimiter', '|') AS {expression.alias_or_name}"
+                )
+            return expression
+
+        for i, (meta, sql, _) in enumerate(self.tpcds_sqls):
+            if string_to_bool(meta.get("execute")):
+                table = execute(parse_one(sql).transform(to_csv).sql(pretty=True), TPCDS_SCHEMA)
+                self.subtestHelper(i, table, tpch=False)
 
     def test_execute_callable(self):
         tables = {
@@ -283,11 +319,47 @@ class TestExecutor(unittest.TestCase):
                 ["a"],
                 [(1,), (2,), (3,)],
             ),
+            (
+                "SELECT 1 / 2 AS a",
+                ["a"],
+                [
+                    (0.5,),
+                ],
+            ),
+            ("SELECT 1 / 0 AS a", ["a"], ZeroDivisionError),
+            (
+                exp.select(
+                    exp.alias_(exp.Literal.number(1).div(exp.Literal.number(2), typed=True), "a")
+                ),
+                ["a"],
+                [
+                    (0,),
+                ],
+            ),
+            (
+                exp.select(
+                    exp.alias_(exp.Literal.number(1).div(exp.Literal.number(0), safe=True), "a")
+                ),
+                ["a"],
+                [
+                    (None,),
+                ],
+            ),
+            (
+                "SELECT a FROM x UNION ALL SELECT a FROM x LIMIT 1",
+                ["a"],
+                [("a",)],
+            ),
         ]:
             with self.subTest(sql):
-                result = execute(sql, schema=schema, tables=tables)
-                self.assertEqual(result.columns, tuple(cols))
-                self.assertEqual(set(result.rows), set(rows))
+                if isinstance(rows, list):
+                    result = execute(sql, schema=schema, tables=tables)
+                    self.assertEqual(result.columns, tuple(cols))
+                    self.assertEqual(set(result.rows), set(rows))
+                else:
+                    with self.assertRaises(ExecuteError) as ctx:
+                        execute(sql, schema=schema, tables=tables)
+                    self.assertIsInstance(ctx.exception.__cause__, rows)
 
     def test_execute_catalog_db_table(self):
         tables = {
@@ -568,6 +640,7 @@ class TestExecutor(unittest.TestCase):
             ("CAST(1 AS TEXT)", "1"),
             ("CAST('1' AS LONG)", 1),
             ("CAST('1.1' AS FLOAT)", 1.1),
+            ("CAST('12:05:01' AS TIME)", time(12, 5, 1)),
             ("COALESCE(NULL)", None),
             ("COALESCE(NULL, NULL)", None),
             ("COALESCE(NULL, 'b')", "b"),
@@ -624,6 +697,24 @@ class TestExecutor(unittest.TestCase):
             ("LEFT('12345', 3)", "123"),
             ("RIGHT('12345', 3)", "345"),
             ("DATEDIFF('2022-01-03'::date, '2022-01-01'::TIMESTAMP::DATE)", 2),
+            ("TRIM(' foo ')", "foo"),
+            ("TRIM('afoob', 'ab')", "foo"),
+            ("ARRAY_JOIN(['foo', 'bar'], ':')", "foo:bar"),
+            ("ARRAY_JOIN(['hello', null ,'world'], ' ', ',')", "hello , world"),
+            ("ARRAY_JOIN(['', null ,'world'], ' ', ',')", " , world"),
+            ("STRUCT('foo', 'bar', null, null)", {"foo": "bar"}),
+            ("ROUND(1.5)", 2),
+            ("ROUND(1.2)", 1),
+            ("ROUND(1.2345, 2)", 1.23),
+            ("ROUND(NULL)", None),
+            ("UNIXTOTIME(1659981729)", datetime.datetime(2022, 8, 8, 18, 2, 9)),
+            ("TIMESTRTOTIME('2013-04-05 01:02:03')", datetime.datetime(2013, 4, 5, 1, 2, 3)),
+            ("UNIXTOTIME(40 * 365 * 86400)", datetime.datetime(2009, 12, 22, 00, 00, 00)),
+            (
+                "STRTOTIME('08/03/2024 12:34:56', '%d/%m/%Y %H:%M:%S')",
+                datetime.datetime(2024, 3, 8, 12, 34, 56),
+            ),
+            ("STRTOTIME('27/01/2024', '%d/%m/%Y')", datetime.datetime(2024, 1, 27)),
         ]:
             with self.subTest(sql):
                 result = execute(f"SELECT {sql}")
@@ -718,8 +809,50 @@ class TestExecutor(unittest.TestCase):
                 [(1, 50), (2, 45), (3, 28)],
                 ("a", "_col_1"),
             ),
+            (
+                "SELECT a, ARRAY_UNIQUE_AGG(b) FROM x GROUP BY a",
+                [(1, [40, 10]), (2, [25, 20]), (3, [28])],
+                ("a", "_col_1"),
+            ),
         ):
             with self.subTest(sql):
                 result = execute(sql, tables=tables)
                 self.assertEqual(result.columns, columns)
                 self.assertEqual(result.rows, expected)
+
+    def test_nested_values(self):
+        tables = {"foo": [{"raw": {"name": "Hello, World", "a": [{"b": 1}]}}]}
+
+        result = execute("SELECT raw:name AS name FROM foo", read="snowflake", tables=tables)
+        self.assertEqual(result.columns, ("NAME",))
+        self.assertEqual(result.rows, [("Hello, World",)])
+
+        result = execute("SELECT raw:a[0].b AS b FROM foo", read="snowflake", tables=tables)
+        self.assertEqual(result.columns, ("B",))
+        self.assertEqual(result.rows, [(1,)])
+
+        result = execute("SELECT raw:a[1].b AS b FROM foo", read="snowflake", tables=tables)
+        self.assertEqual(result.columns, ("B",))
+        self.assertEqual(result.rows, [(None,)])
+
+        result = execute("SELECT raw:a[0].c AS c FROM foo", read="snowflake", tables=tables)
+        self.assertEqual(result.columns, ("C",))
+        self.assertEqual(result.rows, [(None,)])
+
+        tables = {
+            '"ITEM"': [
+                {"id": 1, "attributes": {"flavor": "cherry", "taste": "sweet"}},
+                {"id": 2, "attributes": {"flavor": "lime", "taste": "sour"}},
+                {"id": 3, "attributes": {"flavor": "apple", "taste": None}},
+            ]
+        }
+        result = execute("SELECT i.attributes.flavor FROM `ITEM` i", read="bigquery", tables=tables)
+
+        self.assertEqual(result.columns, ("flavor",))
+        self.assertEqual(result.rows, [("cherry",), ("lime",), ("apple",)])
+
+        tables = {"t": [{"x": [1, 2, 3]}]}
+
+        result = execute("SELECT x FROM t", dialect="duckdb", tables=tables)
+        self.assertEqual(result.columns, ("x",))
+        self.assertEqual(result.rows, [([1, 2, 3],)])

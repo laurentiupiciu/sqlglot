@@ -5,13 +5,12 @@ import typing as t
 from sqlglot import expressions as exp
 from sqlglot.dataframe.sql.column import Column
 from sqlglot.dataframe.sql.util import get_tables_from_expression_with_join
-from sqlglot.dialects import Spark
 from sqlglot.helper import ensure_list
-
-NORMALIZE_INPUT = t.TypeVar("NORMALIZE_INPUT", bound=t.Union[str, exp.Expression, Column])
 
 if t.TYPE_CHECKING:
     from sqlglot.dataframe.sql.session import SparkSession
+
+    NORMALIZE_INPUT = t.TypeVar("NORMALIZE_INPUT", bound=t.Union[str, exp.Expression, Column])
 
 
 def normalize(spark: SparkSession, expression_context: exp.Select, expr: t.List[NORMALIZE_INPUT]):
@@ -20,7 +19,7 @@ def normalize(spark: SparkSession, expression_context: exp.Select, expr: t.List[
     for expression in expressions:
         identifiers = expression.find_all(exp.Identifier)
         for identifier in identifiers:
-            Spark.normalize_identifier(identifier)
+            identifier.transform(spark.dialect.normalize_identifier)
             replace_alias_name_with_cte_name(spark, expression_context, identifier)
             replace_branch_and_sequence_ids_with_cte_name(spark, expression_context, identifier)
 

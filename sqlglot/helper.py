@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import datetime
 import inspect
 import logging
 import re
 import sys
 import typing as t
-from collections.abc import Collection
+from collections.abc import Collection, Set
 from contextlib import contextmanager
 from copy import copy
 from enum import Enum
@@ -13,8 +14,9 @@ from itertools import count
 
 if t.TYPE_CHECKING:
     from sqlglot import exp
-    from sqlglot._typing import E, T
+    from sqlglot._typing import A, E, T
     from sqlglot.expressions import Expression
+
 
 CAMEL_CASE_PATTERN = re.compile("(?<!^)(?=[A-Z])")
 PYTHON_VERSION = sys.version_info[:2]
@@ -33,6 +35,15 @@ class AutoName(Enum):
         return name
 
 
+class classproperty(property):
+    """
+    Similar to a normal property but works for class methods
+    """
+
+    def __get__(self, obj: t.Any, owner: t.Any = None) -> t.Any:
+        return classmethod(self.fget).__get__(None, owner)()  # type: ignore
+
+
 def seq_get(seq: t.Sequence[T], index: int) -> t.Optional[T]:
     """Returns the value in `seq` at position `index`, or `None` if `index` is out of bounds."""
     try:
@@ -42,13 +53,11 @@ def seq_get(seq: t.Sequence[T], index: int) -> t.Optional[T]:
 
 
 @t.overload
-def ensure_list(value: t.Collection[T]) -> t.List[T]:
-    ...
+def ensure_list(value: t.Collection[T]) -> t.List[T]: ...
 
 
 @t.overload
-def ensure_list(value: T) -> t.List[T]:
-    ...
+def ensure_list(value: T) -> t.List[T]: ...
 
 
 def ensure_list(value):
@@ -70,13 +79,11 @@ def ensure_list(value):
 
 
 @t.overload
-def ensure_collection(value: t.Collection[T]) -> t.Collection[T]:
-    ...
+def ensure_collection(value: t.Collection[T]) -> t.Collection[T]: ...
 
 
 @t.overload
-def ensure_collection(value: T) -> t.Collection[T]:
-    ...
+def ensure_collection(value: T) -> t.Collection[T]: ...
 
 
 def ensure_collection(value):
@@ -137,9 +144,9 @@ def subclasses(
 
 def apply_index_offset(
     this: exp.Expression,
-    expressions: t.List[t.Optional[E]],
+    expressions: t.List[E],
     offset: int,
-) -> t.List[t.Optional[E]]:
+) -> t.List[E]:
     """
     Applies an offset to a given integer literal expression.
 
@@ -170,15 +177,12 @@ def apply_index_offset(
     ):
         return expressions
 
-    if expression:
-        if not expression.type:
-            annotate_types(expression)
-        if t.cast(exp.DataType, expression.type).this in exp.DataType.INTEGER_TYPES:
-            logger.warning("Applying array index offset (%s)", offset)
-            expression = simplify(
-                exp.Add(this=expression.copy(), expression=exp.Literal.number(offset))
-            )
-            return [expression]
+    if not expression.type:
+        annotate_types(expression)
+    if t.cast(exp.DataType, expression.type).this in exp.DataType.INTEGER_TYPES:
+        logger.warning("Applying array index offset (%s)", offset)
+        expression = simplify(expression + offset)
+        return [expression]
 
     return expressions
 
@@ -200,13 +204,13 @@ def while_changing(expression: Expression, func: t.Callable[[Expression], E]) ->
         The transformed expression.
     """
     while True:
-        for n, *_ in reversed(tuple(expression.walk())):
+        for n in reversed(tuple(expression.walk())):
             n._hash = hash(n)
 
         start = hash(expression)
         expression = func(expression)
 
-        for n, *_ in expression.walk():
+        for n in expression.walk():
             n._hash = None
         if start == hash(expression):
             break
@@ -228,7 +232,7 @@ def tsort(dag: t.Dict[T, t.Set[T]]) -> t.List[T]:
 
     for node, deps in tuple(dag.items()):
         for dep in deps:
-            if not dep in dag:
+            if dep not in dag:
                 dag[dep] = set()
 
     while dag:
@@ -276,7 +280,7 @@ def csv_reader(read_csv: exp.ReadCSV) -> t.Any:
     file = open_file(read_csv.name)
 
     delimiter = ","
-    args = iter(arg.name for arg in args)
+    args = iter(arg.name for arg in args)  # type: ignore
     for k, v in zip(args, args):
         if k == "delimiter":
             delimiter = v
@@ -310,6 +314,22 @@ def find_new_name(taken: t.Collection[str], base: str) -> str:
         new = f"{base}_{i}"
 
     return new
+
+
+def is_int(text: str) -> bool:
+    return is_type(text, int)
+
+
+def is_float(text: str) -> bool:
+    return is_type(text, float)
+
+
+def is_type(text: str, target_type: t.Type) -> bool:
+    try:
+        target_type(text)
+        return True
+    except ValueError:
+        return False
 
 
 def name_sequence(prefix: str) -> t.Callable[[], str]:
@@ -371,7 +391,9 @@ def is_iterable(value: t.Any) -> bool:
     Returns:
         A `bool` value indicating if it is an iterable.
     """
-    return hasattr(value, "__iter__") and not isinstance(value, (str, bytes))
+    from sqlglot import Expression
+
+    return hasattr(value, "__iter__") and not isinstance(value, (str, bytes, Expression))
 
 
 def flatten(values: t.Iterable[t.Iterable[t.Any] | t.Any]) -> t.Iterator[t.Any]:
@@ -427,3 +449,82 @@ def dict_depth(d: t.Dict) -> int:
 def first(it: t.Iterable[T]) -> T:
     """Returns the first element from an iterable (useful for sets)."""
     return next(i for i in it)
+
+
+def merge_ranges(ranges: t.List[t.Tuple[A, A]]) -> t.List[t.Tuple[A, A]]:
+    """
+    Merges a sequence of ranges, represented as tuples (low, high) whose values
+    belong to some totally-ordered set.
+
+    Example:
+        >>> merge_ranges([(1, 3), (2, 6)])
+        [(1, 6)]
+    """
+    if not ranges:
+        return []
+
+    ranges = sorted(ranges)
+
+    merged = [ranges[0]]
+
+    for start, end in ranges[1:]:
+        last_start, last_end = merged[-1]
+
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    return merged
+
+
+def is_iso_date(text: str) -> bool:
+    try:
+        datetime.date.fromisoformat(text)
+        return True
+    except ValueError:
+        return False
+
+
+def is_iso_datetime(text: str) -> bool:
+    try:
+        datetime.datetime.fromisoformat(text)
+        return True
+    except ValueError:
+        return False
+
+
+# Interval units that operate on date components
+DATE_UNITS = {"day", "week", "month", "quarter", "year", "year_month"}
+
+
+def is_date_unit(expression: t.Optional[exp.Expression]) -> bool:
+    return expression is not None and expression.name.lower() in DATE_UNITS
+
+
+K = t.TypeVar("K")
+V = t.TypeVar("V")
+
+
+class SingleValuedMapping(t.Mapping[K, V]):
+    """
+    Mapping where all keys return the same value.
+
+    This rigamarole is meant to avoid copying keys, which was originally intended
+    as an optimization while qualifying columns for tables with lots of columns.
+    """
+
+    def __init__(self, keys: t.Collection[K], value: V):
+        self._keys = keys if isinstance(keys, Set) else set(keys)
+        self._value = value
+
+    def __getitem__(self, key: K) -> V:
+        if key in self._keys:
+            return self._value
+        raise KeyError(key)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __iter__(self) -> t.Iterator[K]:
+        return iter(self._keys)

@@ -41,16 +41,23 @@ def unnest(select, parent_select, next_alias_name):
         return
 
     predicate = select.find_ancestor(exp.Condition)
-    alias = next_alias_name()
-
-    if not predicate or parent_select is not predicate.parent_select:
+    if (
+        not predicate
+        or parent_select is not predicate.parent_select
+        or not parent_select.args.get("from")
+    ):
         return
+
+    if isinstance(select, exp.Union):
+        select = exp.select(*select.selects).from_(select.subquery(next_alias_name()))
+
+    alias = next_alias_name()
+    clause = predicate.find_ancestor(exp.Having, exp.Where, exp.Join)
 
     # This subquery returns a scalar and can just be converted to a cross join
     if not isinstance(predicate, (exp.In, exp.Any)):
         column = exp.column(select.selects[0].alias_or_name, alias)
 
-        clause = predicate.find_ancestor(exp.Having, exp.Where, exp.Join)
         clause_parent_select = clause.parent_select if clause else None
 
         if (isinstance(clause, exp.Having) and clause_parent_select is parent_select) or (
@@ -61,6 +68,8 @@ def unnest(select, parent_select, next_alias_name):
             )
         ):
             column = exp.Max(this=column)
+        elif not isinstance(select.parent, exp.Subquery):
+            return
 
         _replace(select.parent, column)
         parent_select.join(select, join_type="CROSS", join_alias=alias, copy=False)
@@ -78,12 +87,30 @@ def unnest(select, parent_select, next_alias_name):
     column = _other_operand(predicate)
     value = select.selects[0]
 
-    on = exp.condition(f'{column} = "{alias}"."{value.alias}"')
-    _replace(predicate, f"NOT {on.right} IS NULL")
+    join_key = exp.column(value.alias, alias)
+    join_key_not_null = join_key.is_(exp.null()).not_()
+
+    if isinstance(clause, exp.Join):
+        _replace(predicate, exp.true())
+        parent_select.where(join_key_not_null, copy=False)
+    else:
+        _replace(predicate, join_key_not_null)
+
+    group = select.args.get("group")
+
+    if group:
+        if {value.this} != set(group.expressions):
+            select = (
+                exp.select(exp.column(value.alias, "_q"))
+                .from_(select.subquery("_q", copy=False), copy=False)
+                .group_by(exp.column(value.alias, "_q"), copy=False)
+            )
+    else:
+        select = select.group_by(value.this, copy=False)
 
     parent_select.join(
-        select.group_by(value.this, copy=False),
-        on=on,
+        select,
+        on=column.eq(join_key),
         join_type="LEFT",
         join_alias=alias,
         copy=False,
@@ -113,7 +140,7 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         if isinstance(predicate, exp.Binary):
             key = (
                 predicate.right
-                if any(node is column for node, *_ in predicate.left.walk())
+                if any(node is column for node in predicate.left.walk())
                 else predicate.left
             )
         else:
@@ -235,7 +262,7 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
             key.replace(exp.to_identifier("_x"))
             parent_predicate = _replace(
                 parent_predicate,
-                f'({parent_predicate} AND ARRAY_ANY({nested}, "_x" -> {predicate}))',
+                f"({parent_predicate} AND ARRAY_ANY({nested}, _x -> {predicate}))",
             )
 
     parent_select.join(

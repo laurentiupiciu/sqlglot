@@ -6,6 +6,19 @@ from sqlglot.tokens import Tokenizer, TokenType
 
 
 class TestTokens(unittest.TestCase):
+    def test_space_keywords(self):
+        for string, length in (
+            ("group bys", 2),
+            (" group bys", 2),
+            (" group bys ", 2),
+            ("group by)", 2),
+            ("group bys)", 3),
+            ("group \r", 1),
+        ):
+            tokens = Tokenizer().tokenize(string)
+            self.assertTrue("GROUP" in tokens[0].text.upper())
+            self.assertEqual(len(tokens), length)
+
     def test_comment_attachment(self):
         tokenizer = Tokenizer()
         sql_comment = [
@@ -17,6 +30,7 @@ class TestTokens(unittest.TestCase):
             ("foo /*comment 1*/ /*comment 2*/", ["comment 1", "comment 2"]),
             ("foo\n-- comment", [" comment"]),
             ("1 /*/2 */", ["/2 "]),
+            ("1\n/*comment*/;", ["comment"]),
         ]
 
         for sql, comment in sql_comment:
@@ -49,6 +63,39 @@ x"""
         self.assertEqual(Tokenizer().tokenize("'''abc'")[0].start, 0)
         self.assertEqual(Tokenizer().tokenize("'''abc'")[0].end, 6)
         self.assertEqual(Tokenizer().tokenize("'abc'")[0].start, 0)
+
+        tokens = Tokenizer().tokenize("SELECT\r\n  1,\r\n  2")
+
+        self.assertEqual(tokens[0].line, 1)
+        self.assertEqual(tokens[1].line, 2)
+        self.assertEqual(tokens[2].line, 2)
+        self.assertEqual(tokens[3].line, 3)
+
+    def test_crlf(self):
+        tokens = Tokenizer().tokenize("SELECT a\r\nFROM b")
+        tokens = [(token.token_type, token.text) for token in tokens]
+
+        self.assertEqual(
+            tokens,
+            [
+                (TokenType.SELECT, "SELECT"),
+                (TokenType.VAR, "a"),
+                (TokenType.FROM, "FROM"),
+                (TokenType.VAR, "b"),
+            ],
+        )
+
+        for simple_query in ("SELECT 1\r\n", "\r\nSELECT 1"):
+            tokens = Tokenizer().tokenize(simple_query)
+            tokens = [(token.token_type, token.text) for token in tokens]
+
+            self.assertEqual(
+                tokens,
+                [
+                    (TokenType.SELECT, "SELECT"),
+                    (TokenType.NUMBER, "1"),
+                ],
+            )
 
     def test_command(self):
         tokens = Tokenizer().tokenize("SHOW;")

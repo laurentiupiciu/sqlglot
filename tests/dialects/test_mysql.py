@@ -1,4 +1,5 @@
 from sqlglot import expressions as exp
+from sqlglot.dialects.mysql import MySQL
 from tests.dialects.test_dialect import Validator
 
 
@@ -6,12 +7,29 @@ class TestMySQL(Validator):
     dialect = "mysql"
 
     def test_ddl(self):
+        for t in ("BIGINT", "INT", "MEDIUMINT", "SMALLINT", "TINYINT"):
+            self.validate_identity(f"CREATE TABLE t (id {t} UNSIGNED)")
+            self.validate_identity(f"CREATE TABLE t (id {t}(10) UNSIGNED)")
+
+        self.validate_identity("CREATE TABLE t (id DECIMAL(20, 4) UNSIGNED)")
+        self.validate_identity("CREATE TABLE foo (a BIGINT, UNIQUE (b) USING BTREE)")
         self.validate_identity("CREATE TABLE foo (id BIGINT)")
+        self.validate_identity("CREATE TABLE 00f (1d BIGINT)")
         self.validate_identity("UPDATE items SET items.price = 0 WHERE items.id >= 5 LIMIT 10")
         self.validate_identity("DELETE FROM t WHERE a <= 10 LIMIT 10")
         self.validate_identity("CREATE TABLE foo (a BIGINT, INDEX USING BTREE (b))")
         self.validate_identity("CREATE TABLE foo (a BIGINT, FULLTEXT INDEX (b))")
         self.validate_identity("CREATE TABLE foo (a BIGINT, SPATIAL INDEX (b))")
+        self.validate_identity("ALTER TABLE t1 ADD COLUMN x INT, ALGORITHM=INPLACE, LOCK=EXCLUSIVE")
+        self.validate_identity(
+            "CREATE TABLE `oauth_consumer` (`key` VARCHAR(32) NOT NULL, UNIQUE `OAUTH_CONSUMER_KEY` (`key`))"
+        )
+        self.validate_identity(
+            "CREATE TABLE `x` (`username` VARCHAR(200), PRIMARY KEY (`username`(16)))"
+        )
+        self.validate_identity(
+            "UPDATE items SET items.price = 0 WHERE items.id >= 5 ORDER BY items.id LIMIT 10"
+        )
         self.validate_identity(
             "CREATE TABLE foo (a BIGINT, INDEX b USING HASH (c) COMMENT 'd' VISIBLE ENGINE_ATTRIBUTE = 'e' WITH PARSER foo)"
         )
@@ -39,7 +57,44 @@ class TestMySQL(Validator):
         self.validate_identity(
             "INSERT INTO x VALUES (1, 'a', 2.0) ON DUPLICATE KEY UPDATE x.id = 1"
         )
+        self.validate_identity(
+            "CREATE OR REPLACE VIEW my_view AS SELECT column1 AS `boo`, column2 AS `foo` FROM my_table WHERE column3 = 'some_value' UNION SELECT q.* FROM fruits_table, JSON_TABLE(Fruits, '$[*]' COLUMNS(id VARCHAR(255) PATH '$.$id', value VARCHAR(255) PATH '$.value')) AS q",
+        )
+        self.validate_identity(
+            "CREATE TABLE `foo` (`id` char(36) NOT NULL DEFAULT (uuid()), PRIMARY KEY (`id`), UNIQUE KEY `id` (`id`))",
+            "CREATE TABLE `foo` (`id` CHAR(36) NOT NULL DEFAULT (UUID()), PRIMARY KEY (`id`), UNIQUE `id` (`id`))",
+        )
+        self.validate_identity(
+            "CREATE TABLE IF NOT EXISTS industry_info (a BIGINT(20) NOT NULL AUTO_INCREMENT, b BIGINT(20) NOT NULL, c VARCHAR(1000), PRIMARY KEY (a), UNIQUE KEY d (b), KEY e (b))",
+            "CREATE TABLE IF NOT EXISTS industry_info (a BIGINT(20) NOT NULL AUTO_INCREMENT, b BIGINT(20) NOT NULL, c VARCHAR(1000), PRIMARY KEY (a), UNIQUE d (b), INDEX e (b))",
+        )
+        self.validate_identity(
+            "CREATE TABLE test (ts TIMESTAMP, ts_tz TIMESTAMPTZ, ts_ltz TIMESTAMPLTZ)",
+            "CREATE TABLE test (ts DATETIME, ts_tz TIMESTAMP, ts_ltz TIMESTAMP)",
+        )
+        self.validate_identity(
+            "ALTER TABLE test_table ALTER COLUMN test_column SET DATA TYPE LONGTEXT",
+            "ALTER TABLE test_table MODIFY COLUMN test_column LONGTEXT",
+        )
+        self.validate_identity(
+            "ALTER TABLE test_table MODIFY COLUMN test_column LONGTEXT",
+        )
+        self.validate_identity(
+            "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) DEFAULT CHARSET=utf8 ROW_FORMAT=DYNAMIC",
+            "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP() ON UPDATE CURRENT_TIMESTAMP()) DEFAULT CHARACTER SET=utf8 ROW_FORMAT=DYNAMIC",
+        )
+        self.validate_identity(
+            "CREATE TABLE `foo` (a VARCHAR(10), KEY idx_a (a DESC))",
+            "CREATE TABLE `foo` (a VARCHAR(10), INDEX idx_a (a DESC))",
+        )
 
+        self.validate_all(
+            "CREATE TABLE t (id INT UNSIGNED)",
+            write={
+                "duckdb": "CREATE TABLE t (id UINTEGER)",
+                "mysql": "CREATE TABLE t (id INT UNSIGNED)",
+            },
+        )
         self.validate_all(
             "CREATE TABLE z (a INT) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARACTER SET=utf8 COLLATE=utf8_bin COMMENT='x'",
             write={
@@ -50,37 +105,19 @@ class TestMySQL(Validator):
             },
         )
         self.validate_all(
-            "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) DEFAULT CHARSET=utf8 ROW_FORMAT=DYNAMIC",
-            write={
-                "mysql": "CREATE TABLE t (c DATETIME DEFAULT CURRENT_TIMESTAMP() ON UPDATE CURRENT_TIMESTAMP()) DEFAULT CHARACTER SET=utf8 ROW_FORMAT=DYNAMIC",
-            },
-        )
-        self.validate_all(
             "CREATE TABLE x (id int not null auto_increment, primary key (id))",
             write={
+                "mysql": "CREATE TABLE x (id INT NOT NULL AUTO_INCREMENT, PRIMARY KEY (id))",
                 "sqlite": "CREATE TABLE x (id INTEGER NOT NULL AUTOINCREMENT PRIMARY KEY)",
-            },
-        )
-        self.validate_all(
-            "CREATE TABLE x (id int not null auto_increment)",
-            write={
-                "sqlite": "CREATE TABLE x (id INTEGER NOT NULL)",
-            },
-        )
-        self.validate_all(
-            "CREATE TABLE `foo` (`id` char(36) NOT NULL DEFAULT (uuid()), PRIMARY KEY (`id`), UNIQUE KEY `id` (`id`))",
-            write={
-                "mysql": "CREATE TABLE `foo` (`id` CHAR(36) NOT NULL DEFAULT (UUID()), PRIMARY KEY (`id`), UNIQUE `id` (`id`))",
-            },
-        )
-        self.validate_all(
-            "CREATE TABLE IF NOT EXISTS industry_info (a BIGINT(20) NOT NULL AUTO_INCREMENT, b BIGINT(20) NOT NULL, c VARCHAR(1000), PRIMARY KEY (a), UNIQUE KEY d (b), KEY e (b))",
-            write={
-                "mysql": "CREATE TABLE IF NOT EXISTS industry_info (a BIGINT(20) NOT NULL AUTO_INCREMENT, b BIGINT(20) NOT NULL, c VARCHAR(1000), PRIMARY KEY (a), UNIQUE d (b), INDEX e (b))",
             },
         )
 
     def test_identity(self):
+        self.validate_identity("ALTER TABLE test_table ALTER COLUMN test_column SET DEFAULT 1")
+        self.validate_identity("SELECT DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:00.0000')")
+        self.validate_identity("SELECT @var1 := 1, @var2")
+        self.validate_identity("UNLOCK TABLES")
+        self.validate_identity("LOCK TABLES `app_fields` WRITE", check_command_warning=True)
         self.validate_identity("SELECT 1 XOR 0")
         self.validate_identity("SELECT 1 && 0", "SELECT 1 AND 0")
         self.validate_identity("SELECT /*+ BKA(t1) NO_BKA(t2) */ * FROM t1 INNER JOIN t2")
@@ -91,8 +128,6 @@ class TestMySQL(Validator):
         self.validate_identity("SELECT CAST('[4,5]' AS JSON) MEMBER OF('[[3,4],[4,5]]')")
         self.validate_identity("""SELECT 'ab' MEMBER OF('[23, "abc", 17, "ab", 10]')""")
         self.validate_identity("""SELECT * FROM foo WHERE 'ab' MEMBER OF(content)""")
-        self.validate_identity("CAST(x AS ENUM('a', 'b'))")
-        self.validate_identity("CAST(x AS SET('a', 'b'))")
         self.validate_identity("SELECT CURRENT_TIMESTAMP(6)")
         self.validate_identity("x ->> '$.name'")
         self.validate_identity("SELECT CAST(`a`.`b` AS CHAR) FROM foo")
@@ -103,6 +138,10 @@ class TestMySQL(Validator):
         self.validate_identity("@@GLOBAL.max_connections")
         self.validate_identity("CREATE TABLE A LIKE B")
         self.validate_identity("SELECT * FROM t1, t2 FOR SHARE OF t1, t2 SKIP LOCKED")
+        self.validate_identity("SELECT a || b", "SELECT a OR b")
+        self.validate_identity(
+            "SELECT * FROM x ORDER BY BINARY a", "SELECT * FROM x ORDER BY CAST(a AS BINARY)"
+        )
         self.validate_identity(
             """SELECT * FROM foo WHERE 3 MEMBER OF(JSON_EXTRACT(info, '$.value'))"""
         )
@@ -170,24 +209,53 @@ class TestMySQL(Validator):
         self.validate_identity(
             "SET @@GLOBAL.sort_buffer_size = 1000000, @@LOCAL.sort_buffer_size = 1000000"
         )
+        self.validate_identity("INTERVAL '1' YEAR")
+        self.validate_identity("DATE_ADD(x, INTERVAL 1 YEAR)")
+        self.validate_identity("CHAR(0)")
+        self.validate_identity("CHAR(77, 121, 83, 81, '76')")
+        self.validate_identity("CHAR(77, 77.3, '77.3' USING utf8mb4)")
+        self.validate_identity("SELECT * FROM t1 PARTITION(p0)")
 
     def test_types(self):
+        for char_type in MySQL.Generator.CHAR_CAST_MAPPING:
+            with self.subTest(f"MySQL cast into {char_type}"):
+                self.validate_identity(f"CAST(x AS {char_type.value})", "CAST(x AS CHAR)")
+
+        for signed_type in MySQL.Generator.SIGNED_CAST_MAPPING:
+            with self.subTest(f"MySQL cast into {signed_type}"):
+                self.validate_identity(f"CAST(x AS {signed_type.value})", "CAST(x AS SIGNED)")
+
+        self.validate_identity("CAST(x AS ENUM('a', 'b'))")
+        self.validate_identity("CAST(x AS SET('a', 'b'))")
+        self.validate_identity(
+            "CAST(x AS MEDIUMINT) + CAST(y AS YEAR(4))",
+            "CAST(x AS SIGNED) + CAST(y AS YEAR(4))",
+        )
+        self.validate_identity(
+            "CAST(x AS TIMESTAMP)",
+            "CAST(x AS DATETIME)",
+        )
+        self.validate_identity(
+            "CAST(x AS TIMESTAMPTZ)",
+            "TIMESTAMP(x)",
+        )
+        self.validate_identity(
+            "CAST(x AS TIMESTAMPLTZ)",
+            "TIMESTAMP(x)",
+        )
+
         self.validate_all(
-            "CAST(x AS MEDIUMTEXT) + CAST(y AS LONGTEXT)",
-            read={
-                "mysql": "CAST(x AS MEDIUMTEXT) + CAST(y AS LONGTEXT)",
-            },
+            "CAST(x AS MEDIUMTEXT) + CAST(y AS LONGTEXT) + CAST(z AS TINYTEXT)",
             write={
-                "spark": "CAST(x AS TEXT) + CAST(y AS TEXT)",
+                "mysql": "CAST(x AS CHAR) + CAST(y AS CHAR) + CAST(z AS CHAR)",
+                "spark": "CAST(x AS TEXT) + CAST(y AS TEXT) + CAST(z AS TEXT)",
             },
         )
         self.validate_all(
-            "CAST(x AS MEDIUMBLOB) + CAST(y AS LONGBLOB)",
-            read={
-                "mysql": "CAST(x AS MEDIUMBLOB) + CAST(y AS LONGBLOB)",
-            },
+            "CAST(x AS MEDIUMBLOB) + CAST(y AS LONGBLOB) + CAST(z AS TINYBLOB)",
             write={
-                "spark": "CAST(x AS BLOB) + CAST(y AS BLOB)",
+                "mysql": "CAST(x AS CHAR) + CAST(y AS CHAR) + CAST(z AS CHAR)",
+                "spark": "CAST(x AS BLOB) + CAST(y AS BLOB) + CAST(z AS BLOB)",
             },
         )
 
@@ -204,8 +272,24 @@ class TestMySQL(Validator):
         self.validate_identity(
             "SELECT WEEK_OF_YEAR('2023-01-01')", "SELECT WEEKOFYEAR('2023-01-01')"
         )
+        self.validate_all(
+            "CHAR(10)",
+            write={
+                "mysql": "CHAR(10)",
+                "presto": "CHR(10)",
+            },
+        )
 
     def test_escape(self):
+        self.validate_identity("""'"abc"'""")
+        self.validate_identity(
+            r"'\'a'",
+            "'''a'",
+        )
+        self.validate_identity(
+            '''"'abc'"''',
+            "'''abc'''",
+        )
         self.validate_all(
             r"'a \' b '' '",
             write={
@@ -310,7 +394,6 @@ class TestMySQL(Validator):
             "snowflake": "SELECT 11",
             "spark": "SELECT 11",
             "sqlite": "SELECT 11",
-            "mysql": "SELECT b'1011'",
             "tableau": "SELECT 11",
             "teradata": "SELECT 11",
             "trino": "SELECT 11",
@@ -352,6 +435,7 @@ class TestMySQL(Validator):
             write={
                 "": "MATCH(col1, col2, col3) AGAINST('abc')",
                 "mysql": "MATCH(col1, col2, col3) AGAINST('abc')",
+                "postgres": "(col1 @@ 'abc' OR col2 @@ 'abc' OR col3 @@ 'abc')",  # not quite correct because it's not ts_query
             },
         )
         self.validate_all(
@@ -382,77 +466,217 @@ class TestMySQL(Validator):
             "SELECT DATE_FORMAT('2017-06-15', '%Y')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15', '%Y')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMPNTZ), 'yyyy')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMP), 'yyyy')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2017-06-15', '%m')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15', '%m')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMPNTZ), 'mm')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMP), 'mm')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2017-06-15', '%d')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15', '%d')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMPNTZ), 'DD')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMP), 'DD')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2017-06-15', '%Y-%m-%d')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15', '%Y-%m-%d')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMPNTZ), 'yyyy-mm-DD')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMP), 'yyyy-mm-DD')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2017-06-15 22:23:34', '%H')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15 22:23:34', '%H')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15 22:23:34' AS TIMESTAMPNTZ), 'hh24')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15 22:23:34' AS TIMESTAMP), 'hh24')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2017-06-15', '%w')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2017-06-15', '%w')",
-                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMPNTZ), 'dy')",
+                "snowflake": "SELECT TO_CHAR(CAST('2017-06-15' AS TIMESTAMP), 'dy')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2009-10-04 22:23:00', '%W %M %Y')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2009-10-04 22:23:00', '%W %M %Y')",
-                "snowflake": "SELECT TO_CHAR(CAST('2009-10-04 22:23:00' AS TIMESTAMPNTZ), 'DY mmmm yyyy')",
+                "snowflake": "SELECT TO_CHAR(CAST('2009-10-04 22:23:00' AS TIMESTAMP), 'DY mmmm yyyy')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('2007-10-04 22:23:00', '%H:%i:%s')",
             write={
                 "mysql": "SELECT DATE_FORMAT('2007-10-04 22:23:00', '%T')",
-                "snowflake": "SELECT TO_CHAR(CAST('2007-10-04 22:23:00' AS TIMESTAMPNTZ), 'hh24:mi:ss')",
+                "snowflake": "SELECT TO_CHAR(CAST('2007-10-04 22:23:00' AS TIMESTAMP), 'hh24:mi:ss')",
             },
         )
         self.validate_all(
             "SELECT DATE_FORMAT('1900-10-04 22:23:00', '%d %y %a %d %m %b')",
             write={
                 "mysql": "SELECT DATE_FORMAT('1900-10-04 22:23:00', '%d %y %W %d %m %b')",
-                "snowflake": "SELECT TO_CHAR(CAST('1900-10-04 22:23:00' AS TIMESTAMPNTZ), 'DD yy DY DD mm mon')",
+                "snowflake": "SELECT TO_CHAR(CAST('1900-10-04 22:23:00' AS TIMESTAMP), 'DD yy DY DD mm mon')",
             },
         )
 
     def test_mysql_time(self):
-        self.validate_identity("FROM_UNIXTIME(a, b)")
-        self.validate_identity("FROM_UNIXTIME(a, b, c)")
         self.validate_identity("TIME_STR_TO_UNIX(x)", "UNIX_TIMESTAMP(x)")
+        self.validate_identity("SELECT FROM_UNIXTIME(1711366265, '%Y %D %M')")
+        self.validate_all(
+            "SELECT TO_DAYS(x)",
+            write={
+                "mysql": "SELECT (DATEDIFF(x, '0000-01-01') + 1)",
+                "presto": "SELECT (DATE_DIFF('DAY', CAST(CAST('0000-01-01' AS TIMESTAMP) AS DATE), CAST(CAST(x AS TIMESTAMP) AS DATE)) + 1)",
+            },
+        )
+        self.validate_all(
+            "SELECT DATEDIFF(x, y)",
+            read={
+                "presto": "SELECT DATE_DIFF('DAY', y, x)",
+                "redshift": "SELECT DATEDIFF(DAY, y, x)",
+            },
+            write={
+                "mysql": "SELECT DATEDIFF(x, y)",
+                "presto": "SELECT DATE_DIFF('DAY', y, x)",
+                "redshift": "SELECT DATEDIFF(DAY, y, x)",
+            },
+        )
+        self.validate_all(
+            "DAYOFYEAR(x)",
+            write={
+                "mysql": "DAYOFYEAR(x)",
+                "": "DAY_OF_YEAR(CAST(x AS DATE))",
+            },
+        )
+        self.validate_all(
+            "DAYOFMONTH(x)",
+            write={"mysql": "DAYOFMONTH(x)", "": "DAY_OF_MONTH(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "DAYOFWEEK(x)",
+            write={"mysql": "DAYOFWEEK(x)", "": "DAY_OF_WEEK(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "WEEKOFYEAR(x)",
+            write={"mysql": "WEEKOFYEAR(x)", "": "WEEK_OF_YEAR(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "DAY(x)",
+            write={"mysql": "DAY(x)", "": "DAY(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "WEEK(x)",
+            write={"mysql": "WEEK(x)", "": "WEEK(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "YEAR(x)",
+            write={"mysql": "YEAR(x)", "": "YEAR(CAST(x AS DATE))"},
+        )
+        self.validate_all(
+            "DATE(x)",
+            read={"": "TS_OR_DS_TO_DATE(x)"},
+        )
+        self.validate_all(
+            "STR_TO_DATE(x, '%M')",
+            read={"": "TS_OR_DS_TO_DATE(x, '%B')"},
+        )
+        self.validate_all(
+            "STR_TO_DATE(x, '%Y-%m-%d')",
+            write={"presto": "CAST(DATE_PARSE(x, '%Y-%m-%d') AS DATE)"},
+        )
+        self.validate_all(
+            "STR_TO_DATE(x, '%Y-%m-%dT%T')", write={"presto": "DATE_PARSE(x, '%Y-%m-%dT%T')"}
+        )
+        self.validate_all(
+            "SELECT FROM_UNIXTIME(col)",
+            read={
+                "postgres": "SELECT TO_TIMESTAMP(col)",
+            },
+            write={
+                "mysql": "SELECT FROM_UNIXTIME(col)",
+                "postgres": "SELECT TO_TIMESTAMP(col)",
+                "redshift": "SELECT (TIMESTAMP 'epoch' + col * INTERVAL '1 SECOND')",
+            },
+        )
 
     def test_mysql(self):
+        self.validate_all(
+            "SELECT department, GROUP_CONCAT(name) AS employee_names FROM data GROUP BY department",
+            read={
+                "postgres": "SELECT department, array_agg(name) AS employee_names FROM data GROUP BY department",
+            },
+        )
+        self.validate_all(
+            "SELECT UNIX_TIMESTAMP(CAST('2024-04-29 12:00:00' AS DATETIME))",
+            read={
+                "mysql": "SELECT UNIX_TIMESTAMP(CAST('2024-04-29 12:00:00' AS DATETIME))",
+                "postgres": "SELECT EXTRACT(epoch FROM TIMESTAMP '2024-04-29 12:00:00')",
+            },
+        )
+        self.validate_all(
+            "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]')",
+            read={
+                "sqlite": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]')",
+            },
+            write={
+                "mysql": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]')",
+                "sqlite": "SELECT '[10, 20, [30, 40]]' -> '$[1]'",
+            },
+        )
+        self.validate_all(
+            "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]', '$[0]')",
+            read={
+                "sqlite": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]', '$[0]')",
+            },
+            write={
+                "mysql": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]', '$[0]')",
+                "sqlite": "SELECT JSON_EXTRACT('[10, 20, [30, 40]]', '$[1]', '$[0]')",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM x LEFT JOIN y ON x.id = y.id UNION SELECT * FROM x RIGHT JOIN y ON x.id = y.id LIMIT 0",
+            read={
+                "postgres": "SELECT * FROM x FULL JOIN y ON x.id = y.id LIMIT 0",
+            },
+        )
+        self.validate_all(
+            # MySQL doesn't support FULL OUTER joins
+            "WITH t1 AS (SELECT 1) SELECT * FROM t1 LEFT OUTER JOIN t2 ON t1.x = t2.x UNION SELECT * FROM t1 RIGHT OUTER JOIN t2 ON t1.x = t2.x",
+            read={
+                "postgres": "WITH t1 AS (SELECT 1) SELECT * FROM t1 FULL OUTER JOIN t2 ON t1.x = t2.x",
+            },
+        )
+        self.validate_all(
+            "a XOR b",
+            read={
+                "mysql": "a XOR b",
+                "snowflake": "BOOLXOR(a, b)",
+            },
+            write={
+                "duckdb": "(a AND (NOT b)) OR ((NOT a) AND b)",
+                "mysql": "a XOR b",
+                "postgres": "(a AND (NOT b)) OR ((NOT a) AND b)",
+                "snowflake": "BOOLXOR(a, b)",
+                "trino": "(a AND (NOT b)) OR ((NOT a) AND b)",
+            },
+        )
+
         self.validate_all(
             "SELECT * FROM test LIMIT 0 + 1, 0 + 1",
             write={
                 "mysql": "SELECT * FROM test LIMIT 1 OFFSET 1",
                 "postgres": "SELECT * FROM test LIMIT 0 + 1 OFFSET 0 + 1",
+                "presto": "SELECT * FROM test OFFSET 1 LIMIT 1",
+                "snowflake": "SELECT * FROM test LIMIT 1 OFFSET 1",
+                "trino": "SELECT * FROM test OFFSET 1 LIMIT 1",
+                "bigquery": "SELECT * FROM test LIMIT 1 OFFSET 1",
             },
         )
         self.validate_all(
@@ -490,6 +714,7 @@ class TestMySQL(Validator):
                 "mysql": "SELECT DATE(DATE_SUB(`dt`, INTERVAL (DAYOFMONTH(`dt`) - 1) DAY)) AS __timestamp FROM tableT",
             },
         )
+        self.validate_identity("SELECT name FROM temp WHERE name = ? FOR UPDATE")
         self.validate_all(
             "SELECT a FROM tbl FOR UPDATE",
             write={
@@ -498,7 +723,7 @@ class TestMySQL(Validator):
                 "oracle": "SELECT a FROM tbl FOR UPDATE",
                 "postgres": "SELECT a FROM tbl FOR UPDATE",
                 "redshift": "SELECT a FROM tbl",
-                "tsql": "SELECT a FROM tbl FOR UPDATE",
+                "tsql": "SELECT a FROM tbl",
             },
         )
         self.validate_all(
@@ -508,7 +733,7 @@ class TestMySQL(Validator):
                 "mysql": "SELECT a FROM tbl FOR SHARE",
                 "oracle": "SELECT a FROM tbl FOR SHARE",
                 "postgres": "SELECT a FROM tbl FOR SHARE",
-                "tsql": "SELECT a FROM tbl FOR SHARE",
+                "tsql": "SELECT a FROM tbl",
             },
         )
         self.validate_all(
@@ -536,6 +761,52 @@ class TestMySQL(Validator):
                 "sqlite": "GROUP_CONCAT(DISTINCT x, '')",
                 "tsql": "STRING_AGG(x, '') WITHIN GROUP (ORDER BY y DESC)",
                 "postgres": "STRING_AGG(DISTINCT x, '' ORDER BY y DESC NULLS LAST)",
+            },
+        )
+        self.validate_all(
+            "GROUP_CONCAT(a, b, c SEPARATOR ',')",
+            write={
+                "mysql": "GROUP_CONCAT(CONCAT(a, b, c) SEPARATOR ',')",
+                "sqlite": "GROUP_CONCAT(a || b || c, ',')",
+                "tsql": "STRING_AGG(CONCAT(a, b, c), ',')",
+                "postgres": "STRING_AGG(CONCAT(a, b, c), ',')",
+                "presto": "ARRAY_JOIN(ARRAY_AGG(CONCAT(CAST(a AS VARCHAR), CAST(b AS VARCHAR), CAST(c AS VARCHAR))), ',')",
+            },
+        )
+        self.validate_all(
+            "GROUP_CONCAT(a, b, c SEPARATOR '')",
+            write={
+                "mysql": "GROUP_CONCAT(CONCAT(a, b, c) SEPARATOR '')",
+                "sqlite": "GROUP_CONCAT(a || b || c, '')",
+                "tsql": "STRING_AGG(CONCAT(a, b, c), '')",
+                "postgres": "STRING_AGG(CONCAT(a, b, c), '')",
+            },
+        )
+        self.validate_all(
+            "GROUP_CONCAT(DISTINCT a, b, c SEPARATOR '')",
+            write={
+                "mysql": "GROUP_CONCAT(DISTINCT CONCAT(a, b, c) SEPARATOR '')",
+                "sqlite": "GROUP_CONCAT(DISTINCT a || b || c, '')",
+                "tsql": "STRING_AGG(CONCAT(a, b, c), '')",
+                "postgres": "STRING_AGG(DISTINCT CONCAT(a, b, c), '')",
+            },
+        )
+        self.validate_all(
+            "GROUP_CONCAT(a, b, c ORDER BY d SEPARATOR '')",
+            write={
+                "mysql": "GROUP_CONCAT(CONCAT(a, b, c) ORDER BY d SEPARATOR '')",
+                "sqlite": "GROUP_CONCAT(a || b || c, '')",
+                "tsql": "STRING_AGG(CONCAT(a, b, c), '') WITHIN GROUP (ORDER BY d)",
+                "postgres": "STRING_AGG(CONCAT(a, b, c), '' ORDER BY d NULLS FIRST)",
+            },
+        )
+        self.validate_all(
+            "GROUP_CONCAT(DISTINCT a, b, c ORDER BY d SEPARATOR '')",
+            write={
+                "mysql": "GROUP_CONCAT(DISTINCT CONCAT(a, b, c) ORDER BY d SEPARATOR '')",
+                "sqlite": "GROUP_CONCAT(DISTINCT a || b || c, '')",
+                "tsql": "STRING_AGG(CONCAT(a, b, c), '') WITHIN GROUP (ORDER BY d)",
+                "postgres": "STRING_AGG(DISTINCT CONCAT(a, b, c), '' ORDER BY d NULLS FIRST)",
             },
         )
         self.validate_identity(
@@ -615,6 +886,7 @@ COMMENT='客户账户表'"""
             ("CHARACTER SET", "CHARACTER SET"),
             ("COLLATION", "COLLATION"),
             ("DATABASES", "DATABASES"),
+            ("SCHEMAS", "DATABASES"),
             ("FUNCTION STATUS", "FUNCTION STATUS"),
             ("PROCEDURE STATUS", "PROCEDURE STATUS"),
             ("GLOBAL STATUS", "GLOBAL STATUS"),
@@ -675,7 +947,7 @@ COMMENT='客户账户表'"""
             self.assertEqual(show.text("target"), "foo")
 
     def test_show_grants(self):
-        show = self.validate_identity(f"SHOW GRANTS FOR foo")
+        show = self.validate_identity("SHOW GRANTS FOR foo")
         self.assertIsInstance(show, exp.Show)
         self.assertEqual(show.name, "GRANTS")
         self.assertEqual(show.text("target"), "foo")
@@ -817,3 +1089,65 @@ COMMENT='客户账户表'"""
 
         cmd = self.parse_one("SET x = 1, y = 2")
         self.assertEqual(len(cmd.expressions), 2)
+
+    def test_json_object(self):
+        self.validate_identity("SELECT JSON_OBJECT('id', 87, 'name', 'carrot')")
+
+    def test_is_null(self):
+        self.validate_all(
+            "SELECT ISNULL(x)", write={"": "SELECT (x IS NULL)", "mysql": "SELECT (x IS NULL)"}
+        )
+
+    def test_monthname(self):
+        self.validate_all(
+            "MONTHNAME(x)",
+            write={
+                "": "TIME_TO_STR(CAST(x AS DATE), '%B')",
+                "mysql": "DATE_FORMAT(x, '%M')",
+            },
+        )
+
+    def test_safe_div(self):
+        self.validate_all(
+            "a / b",
+            write={
+                "bigquery": "a / NULLIF(b, 0)",
+                "clickhouse": "a / b",
+                "databricks": "a / NULLIF(b, 0)",
+                "duckdb": "a / b",
+                "hive": "a / b",
+                "mysql": "a / b",
+                "oracle": "a / NULLIF(b, 0)",
+                "snowflake": "a / NULLIF(b, 0)",
+                "spark": "a / b",
+                "starrocks": "a / b",
+                "drill": "CAST(a AS DOUBLE) / NULLIF(b, 0)",
+                "postgres": "CAST(a AS DOUBLE PRECISION) / NULLIF(b, 0)",
+                "presto": "CAST(a AS DOUBLE) / NULLIF(b, 0)",
+                "redshift": "CAST(a AS DOUBLE PRECISION) / NULLIF(b, 0)",
+                "sqlite": "CAST(a AS REAL) / b",
+                "teradata": "CAST(a AS DOUBLE PRECISION) / NULLIF(b, 0)",
+                "trino": "CAST(a AS DOUBLE) / NULLIF(b, 0)",
+                "tsql": "CAST(a AS FLOAT) / NULLIF(b, 0)",
+            },
+        )
+
+    def test_timestamp_trunc(self):
+        for dialect in ("postgres", "snowflake", "duckdb", "spark", "databricks"):
+            for unit in (
+                "MILLISECOND",
+                "SECOND",
+                "DAY",
+                "MONTH",
+                "YEAR",
+            ):
+                with self.subTest(f"MySQL -> {dialect} Timestamp Trunc with unit {unit}: "):
+                    self.validate_all(
+                        f"DATE_ADD('0000-01-01 00:00:00', INTERVAL (TIMESTAMPDIFF({unit}, '0000-01-01 00:00:00', CAST('2001-02-16 20:38:40' AS DATETIME))) {unit})",
+                        read={
+                            dialect: f"DATE_TRUNC({unit}, TIMESTAMP '2001-02-16 20:38:40')",
+                        },
+                        write={
+                            "mysql": f"DATE_ADD('0000-01-01 00:00:00', INTERVAL (TIMESTAMPDIFF({unit}, '0000-01-01 00:00:00', CAST('2001-02-16 20:38:40' AS DATETIME))) {unit})",
+                        },
+                    )
