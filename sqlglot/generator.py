@@ -8,7 +8,7 @@ from functools import reduce
 
 from sqlglot import exp
 from sqlglot.errors import ErrorLevel, UnsupportedError, concat_messages
-from sqlglot.helper import apply_index_offset, csv, seq_get
+from sqlglot.helper import apply_index_offset, csv, name_sequence, seq_get
 from sqlglot.jsonpath import ALL_JSON_PATH_PARTS, JSON_PATH_PART_TRANSFORMS
 from sqlglot.time import format_time
 from sqlglot.tokens import TokenType
@@ -539,6 +539,7 @@ class Generator(metaclass=_Generator):
         "unsupported_messages",
         "_escaped_quote_end",
         "_escaped_identifier_end",
+        "_next_name",
     )
 
     def __init__(
@@ -583,6 +584,8 @@ class Generator(metaclass=_Generator):
         self._escaped_identifier_end: str = (
             self.dialect.tokenizer_class.IDENTIFIER_ESCAPES[0] + self.dialect.IDENTIFIER_END
         )
+
+        self._next_name = name_sequence("_t")
 
     def generate(self, expression: exp.Expression, copy: bool = True) -> str:
         """
@@ -1095,7 +1098,7 @@ class Generator(metaclass=_Generator):
             self.unsupported("Named columns are not supported in table alias.")
 
         if not alias and not self.dialect.UNNEST_COLUMN_ONLY:
-            alias = "_t"
+            alias = self._next_name()
 
         return f"{alias}{columns}"
 
@@ -2843,9 +2846,10 @@ class Generator(metaclass=_Generator):
                 stack.append(self.expressions(expression, sep=f" {op} "))
             else:
                 stack.append(expression.right)
-                if expression.comments:
+                if expression.comments and self.comments:
                     for comment in expression.comments:
-                        op += f" /*{self.pad_comment(comment)}*/"
+                        if comment:
+                            op += f" /*{self.pad_comment(comment)}*/"
                 stack.extend((op, expression.left))
             return op
 
@@ -2977,6 +2981,19 @@ class Generator(metaclass=_Generator):
             self.unsupported("Unsupported ALTER COLUMN syntax")
 
         return f"ALTER COLUMN {this} DROP DEFAULT"
+
+    def alterdiststyle_sql(self, expression: exp.AlterDistStyle) -> str:
+        this = self.sql(expression, "this")
+        if not isinstance(expression.this, exp.Var):
+            this = f"KEY DISTKEY {this}"
+        return f"ALTER DISTSTYLE {this}"
+
+    def altersortkey_sql(self, expression: exp.AlterSortKey) -> str:
+        compound = " COMPOUND" if expression.args.get("compound") else ""
+        this = self.sql(expression, "this")
+        expressions = self.expressions(expression, flat=True)
+        expressions = f"({expressions})" if expressions else ""
+        return f"ALTER{compound} SORTKEY {this or expressions}"
 
     def renametable_sql(self, expression: exp.RenameTable) -> str:
         if not self.RENAME_TABLE_WITH_DB:

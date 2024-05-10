@@ -353,6 +353,11 @@ class ClickHouse(Dialect):
             "CODEC": lambda self: self._parse_compress(),
         }
 
+        ALTER_PARSERS = {
+            **parser.Parser.ALTER_PARSERS,
+            "REPLACE": lambda self: self._parse_alter_table_replace(),
+        }
+
         SCHEMA_UNNAMED_CONSTRAINTS = {
             *parser.Parser.SCHEMA_UNNAMED_CONSTRAINTS,
             "INDEX",
@@ -576,6 +581,31 @@ class ClickHouse(Dialect):
                 expression=expression,
                 index_type=index_type,
                 granularity=granularity,
+            )
+
+        def _parse_partition(self) -> t.Optional[exp.Partition]:
+            # https://clickhouse.com/docs/en/sql-reference/statements/alter/partition#how-to-set-partition-expression
+            if not self._match(TokenType.PARTITION):
+                return None
+
+            if self._match_text_seq("ID"):
+                # Corresponds to the PARTITION ID <string_value> syntax
+                expressions: t.List[exp.Expression] = [
+                    self.expression(exp.PartitionId, this=self._parse_string())
+                ]
+            else:
+                expressions = self._parse_expressions()
+
+            return self.expression(exp.Partition, expressions=expressions)
+
+        def _parse_alter_table_replace(self) -> t.Optional[exp.Expression]:
+            partition = self._parse_partition()
+
+            if not partition or not self._match(TokenType.FROM):
+                return None
+
+            return self.expression(
+                exp.ReplacePartition, expression=partition, source=self._parse_table_parts()
             )
 
     class Generator(generator.Generator):
@@ -828,3 +858,14 @@ class ClickHouse(Dialect):
             granularity = f" GRANULARITY {granularity}" if granularity else ""
 
             return f"INDEX{this}{expr}{index_type}{granularity}"
+
+        def partition_sql(self, expression: exp.Partition) -> str:
+            return f"PARTITION {self.expressions(expression, flat=True)}"
+
+        def partitionid_sql(self, expression: exp.PartitionId) -> str:
+            return f"ID {self.sql(expression.this)}"
+
+        def replacepartition_sql(self, expression: exp.ReplacePartition) -> str:
+            return (
+                f"REPLACE {self.sql(expression.expression)} FROM {self.sql(expression, 'source')}"
+            )

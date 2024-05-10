@@ -474,6 +474,8 @@ class TSQL(Dialect):
             "OPTION": TokenType.OPTION,
         }
 
+        COMMANDS = {*tokens.Tokenizer.COMMANDS, TokenType.END}
+
     class Parser(parser.Parser):
         SET_REQUIRES_ASSIGNMENT_DELIMITER = False
         LOG_DEFAULTS_TO_LN = True
@@ -522,11 +524,6 @@ class TSQL(Dialect):
         RETURNS_TABLE_TOKENS = parser.Parser.ID_VAR_TOKENS - {
             TokenType.TABLE,
             *parser.Parser.TYPE_TOKENS,
-        }
-
-        STATEMENT_PARSERS = {
-            **parser.Parser.STATEMENT_PARSERS,
-            TokenType.END: lambda self: self._parse_command(),
         }
 
         def _parse_options(self) -> t.Optional[t.List[exp.Expression]]:
@@ -920,6 +917,10 @@ class TSQL(Dialect):
         def create_sql(self, expression: exp.Create) -> str:
             kind = expression.kind
             exists = expression.args.pop("exists", None)
+
+            if kind == "VIEW":
+                expression.this.set("catalog", None)
+
             sql = super().create_sql(expression)
 
             like_property = expression.find(exp.LikeProperty)
@@ -1061,3 +1062,8 @@ class TSQL(Dialect):
             if isinstance(action, exp.RenameTable):
                 return f"EXEC sp_rename '{self.sql(expression.this)}', '{action.this.name}'"
             return super().altertable_sql(expression)
+
+        def drop_sql(self, expression: exp.Drop) -> str:
+            if expression.args["kind"] == "VIEW":
+                expression.this.set("catalog", None)
+            return super().drop_sql(expression)

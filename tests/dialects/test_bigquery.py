@@ -279,6 +279,13 @@ class TestBigQuery(Validator):
         )
 
         self.validate_all(
+            "SELECT t.c1, h.c2, s.c3 FROM t1 AS t, UNNEST(t.t2) AS h, UNNEST(h.t3) AS s",
+            write={
+                "bigquery": "SELECT t.c1, h.c2, s.c3 FROM t1 AS t, UNNEST(t.t2) AS h, UNNEST(h.t3) AS s",
+                "duckdb": "SELECT t.c1, h.c2, s.c3 FROM t1 AS t, UNNEST(t.t2) AS _t0(h), UNNEST(h.t3) AS _t1(s)",
+            },
+        )
+        self.validate_all(
             "PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E6S%z', x)",
             write={
                 "bigquery": "PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E6S%z', x)",
@@ -289,7 +296,7 @@ class TestBigQuery(Validator):
             "SELECT results FROM Coordinates, Coordinates.position AS results",
             write={
                 "bigquery": "SELECT results FROM Coordinates, UNNEST(Coordinates.position) AS results",
-                "presto": "SELECT results FROM Coordinates, UNNEST(Coordinates.position) AS _t(results)",
+                "presto": "SELECT results FROM Coordinates, UNNEST(Coordinates.position) AS _t0(results)",
             },
         )
         self.validate_all(
@@ -307,7 +314,7 @@ class TestBigQuery(Validator):
             },
             write={
                 "bigquery": "SELECT results FROM Coordinates AS c, UNNEST(c.position) AS results",
-                "presto": "SELECT results FROM Coordinates AS c, UNNEST(c.position) AS _t(results)",
+                "presto": "SELECT results FROM Coordinates AS c, UNNEST(c.position) AS _t0(results)",
                 "redshift": "SELECT results FROM Coordinates AS c, c.position AS results",
             },
         )
@@ -525,7 +532,7 @@ class TestBigQuery(Validator):
             "SELECT * FROM t WHERE EXISTS(SELECT * FROM unnest(nums) AS x WHERE x > 1)",
             write={
                 "bigquery": "SELECT * FROM t WHERE EXISTS(SELECT * FROM UNNEST(nums) AS x WHERE x > 1)",
-                "duckdb": "SELECT * FROM t WHERE EXISTS(SELECT * FROM UNNEST(nums) AS _t(x) WHERE x > 1)",
+                "duckdb": "SELECT * FROM t WHERE EXISTS(SELECT * FROM UNNEST(nums) AS _t0(x) WHERE x > 1)",
             },
         )
         self.validate_all(
@@ -860,8 +867,8 @@ class TestBigQuery(Validator):
             },
             write={
                 "bigquery": "SELECT * FROM UNNEST(['7', '14']) AS x",
-                "presto": "SELECT * FROM UNNEST(ARRAY['7', '14']) AS _t(x)",
-                "spark": "SELECT * FROM UNNEST(ARRAY('7', '14')) AS _t(x)",
+                "presto": "SELECT * FROM UNNEST(ARRAY['7', '14']) AS _t0(x)",
+                "spark": "SELECT * FROM UNNEST(ARRAY('7', '14')) AS _t0(x)",
             },
         )
         self.validate_all(
@@ -1464,3 +1471,14 @@ OPTIONS (
 
         with self.assertRaises(ParseError):
             transpile("SELECT JSON_OBJECT('a', 1, 'b') AS json_data", read="bigquery")
+
+    def test_mod(self):
+        for sql in ("MOD(a, b)", "MOD('a', b)", "MOD(5, 2)", "MOD((a + 1) * 8, 5 - 1)"):
+            with self.subTest(f"Testing BigQuery roundtrip of modulo operation: {sql}"):
+                self.validate_identity(sql)
+
+        self.validate_identity("SELECT MOD((SELECT 1), 2)")
+        self.validate_identity(
+            "MOD((a + 1), b)",
+            "MOD(a + 1, b)",
+        )

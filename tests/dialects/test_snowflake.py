@@ -832,6 +832,18 @@ WHERE
                 "snowflake": "SELECT LISTAGG(col1, ', ') WITHIN GROUP (ORDER BY col2) FROM t",
             },
         )
+        self.validate_all(
+            "SELECT APPROX_PERCENTILE(a, 0.5) FROM t",
+            read={
+                "trino": "SELECT APPROX_PERCENTILE(a, 1, 0.5, 0.001) FROM t",
+                "presto": "SELECT APPROX_PERCENTILE(a, 1, 0.5, 0.001) FROM t",
+            },
+            write={
+                "trino": "SELECT APPROX_PERCENTILE(a, 0.5) FROM t",
+                "presto": "SELECT APPROX_PERCENTILE(a, 0.5) FROM t",
+                "snowflake": "SELECT APPROX_PERCENTILE(a, 0.5) FROM t",
+            },
+        )
 
     def test_null_treatment(self):
         self.validate_all(
@@ -1183,7 +1195,7 @@ WHERE
         self.validate_identity("CREATE TABLE IDENTIFIER('foo') (COLUMN1 VARCHAR, COLUMN2 VARCHAR)")
         self.validate_identity("CREATE TABLE IDENTIFIER($foo) (col1 VARCHAR, col2 VARCHAR)")
         self.validate_identity(
-            "DROP function my_udf (OBJECT(city VARCHAR, zipcode DECIMAL, val ARRAY(BOOLEAN)))"
+            "DROP FUNCTION my_udf (OBJECT(city VARCHAR, zipcode DECIMAL, val ARRAY(BOOLEAN)))"
         )
         self.validate_identity(
             "CREATE TABLE orders_clone_restore CLONE orders AT (TIMESTAMP => TO_TIMESTAMP_TZ('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss'))"
@@ -1210,6 +1222,14 @@ WHERE
         self.validate_identity(
             "CREATE OR REPLACE FUNCTION my_udtf(foo BOOLEAN) RETURNS TABLE(col1 ARRAY(INT)) AS $$ WITH t AS (SELECT CAST([1, 2, 3] AS ARRAY(INT)) AS c) SELECT c FROM t $$",
             "CREATE OR REPLACE FUNCTION my_udtf(foo BOOLEAN) RETURNS TABLE (col1 ARRAY(INT)) AS ' WITH t AS (SELECT CAST([1, 2, 3] AS ARRAY(INT)) AS c) SELECT c FROM t '",
+        )
+        self.validate_identity(
+            "CREATE SEQUENCE seq1 WITH START=1, INCREMENT=1 ORDER",
+            "CREATE SEQUENCE seq1 START=1 INCREMENT BY 1 ORDER",
+        )
+        self.validate_identity(
+            "CREATE SEQUENCE seq1 WITH START=1 INCREMENT=1 ORDER",
+            "CREATE SEQUENCE seq1 START=1 INCREMENT=1 ORDER",
         )
 
         self.validate_all(
